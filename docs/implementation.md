@@ -8,7 +8,7 @@ describes configuration, session handling, and errors.
 
 | File | Responsibility |
 | --- | --- |
-| `src/main.rs` | CLI subcommands: `serve`, explicit `login`, and `logout`. Server mode uses MCP over stdio. |
+| `src/main.rs` | CLI subcommands: `serve`, explicit `login`, terminal-only `choose-chat`, and `logout`. Server mode uses MCP over stdio. |
 | `src/config.rs` | Parses and validates the explicit account and resource allowlist; derives requested delegated scopes. |
 | `src/auth.rs` | Microsoft browser sign-in with PKCE, device-code and refresh flows, account verification, in-memory access-token cache, and the Linux Secret Service adapter. |
 | `src/graph.rs` | Read-only Microsoft Graph requests, validated pagination, bounded responses, and message normalization. |

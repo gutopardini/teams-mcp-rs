@@ -70,6 +70,9 @@ or credential lookup.
 
 ## Configure a real account
 
+For an end-to-end Linux terminal walkthrough, including Codex registration and
+sign-out, see the [terminal quickstart](docs/quickstart.md).
+
 1. Copy `config.example.toml` to a private location outside the repository.
 2. Set `tenant_id` to the tenant UUID and `account_id` to your user's object UUID
    in that tenant. Set `backend = "native_teams"` at the top level for native
@@ -78,7 +81,8 @@ or credential lookup.
 3. Remove the fictional entries. Add only the exact resources you want to
    expose, or choose a native chat using the command below. Native mode supports
    chat reads only; channel reads require the Graph adapter.
-4. Sign in explicitly, choose a chat if needed, and configure your MCP client:
+4. For the native backend, sign in explicitly, choose a chat if needed, and
+   configure your MCP client:
 
 ```sh
 cargo run -- login --config /absolute/path/to/config.toml --bootstrap-chat
@@ -92,7 +96,8 @@ a short user code. To use the existing Teams Linux sign-in window instead:
 
 ```sh
 cargo run -- login --config /absolute/path/to/config.toml \
-  --webview-helper /absolute/path/to/teams-linux-rs/target/release/teams-linux-rs
+  --webview-helper /absolute/path/to/teams-linux-rs/target/release/teams-linux-rs \
+  --bootstrap-chat
 ```
 
 For initial sign-in before selecting a chat, `--bootstrap-chat` permits the

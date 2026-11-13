@@ -1,7 +1,8 @@
 # Operations and troubleshooting
 
-This guide describes the implemented read-only server. For setup prerequisites,
-the demo, and an example MCP client configuration, see the [README](../README.md).
+This guide describes the implemented read-only server. For the Linux terminal
+walkthrough, see [quickstart.md](quickstart.md); for the demo and an example MCP
+client configuration, see the [README](../README.md).
 In the Linux pilot, native sign-in and one selected chat read succeeded against
 one live tenant. Other accounts, tenants, and native channel reads remain
 unvalidated.
@@ -32,6 +33,11 @@ unvalidated.
 - `language` defaults to `en-US`. Only the English catalog is currently bundled;
   an unavailable valid locale falls back to English. CLI help and MCP tool
   descriptions remain English literals.
+
+Native sign-in requests `openid`, `profile`, `offline_access`, and the Teams
+`https://api.spaces.skype.com/.default` scope. The `profile` scope supplies the
+account identifier checked by the MCP. Graph mode requests its configured
+delegated read scopes as described in the [README](../README.md).
 
 The server loads configuration **once at startup**. After changing the account,
 language, or allowlist, restart all affected MCP server processes. In particular,
@@ -72,7 +78,7 @@ may handle or retain data separately; their configuration is outside this server
 ## Reading and search limits
 
 - The maximum requested message or reply page is 50; the default is 25. The
-  Graph response body limit is 2 MiB and each message body is limited to 8,000
+  Graph and native response body limit is 2 MiB and each message body is limited to 8,000
   Unicode characters. `text_truncated` flags a shortened message.
 - Graph channel pages contain root posts only, as identified by
   `coverage: channel_root_posts_only`. Use `teams_get_thread` for replies. Graph
@@ -100,7 +106,7 @@ server does not open links or attachments and does not mark messages as read.
 ## Errors
 
 Tool failures have `isError: true` and a JSON text payload containing a stable
-`code`, an English `message`, and `upstream_status` when Graph returned a status.
+`code`, an English `message`, and `upstream_status` when a backend returned a status.
 The CLI prints a short English error to stderr; it does not print server bodies
 or tokens for diagnosis.
 
@@ -112,11 +118,15 @@ or tokens for diagnosis.
 | `invalid_cursor` | The cursor is malformed or targets a different origin, resource, or thread. Use an unmodified cursor returned for the same target. |
 | `authentication_required` | No saved session was found. Run the explicit login command for this configuration. |
 | `authentication_failed` | Sign-in, token refresh, or Graph account verification failed. Check tenant policy and consent, then sign in again if needed. |
+| `authentication_cancelled` | The browser sign-in was cancelled or timed out. Start the login command again if needed. |
 | `incompatible_client` | Microsoft rejected the client ID for the requested permissions (`AADSTS65002`). Configure an authorized app registration and follow the tenant's consent process. |
+| `browser_unavailable` | The optional Teams Linux sign-in window could not start. Use the device-code login flow or check the helper path. |
+| `selection_unavailable` | Chat selection could not read from or write to the console. Run it in an available terminal. |
+| `config_changed` | The configuration changed while a chat was being selected. The selection was not saved; retry with the current file. |
 | `account_mismatch` | The signed-in identity does not match the configured account, tenant, or other identity checks. Use the intended account and verify the configuration. |
 | `credential_store_unavailable` | Secret Service or `secret-tool` could not be used. Check the Linux desktop keyring; tokens are not written to a plaintext fallback. |
 | `unsupported_platform` | This platform's credential-store adapter is not implemented. The fictional demo remains available. |
-| `upstream_error` | Graph returned an error. Inspect the numeric `upstream_status`: for example, `403` may indicate missing access or consent and `429` indicates throttling. The server does not automatically retry. |
+| `upstream_error` | A backend returned an error. Inspect the numeric `upstream_status`: for example, `403` may indicate missing access or consent and `429` indicates throttling. The server does not automatically retry failed message reads. |
 | `network_error` | A Microsoft endpoint could not be reached or a response could not be read. Check connectivity and try again. |
 | `response_too_large` | The response exceeded the size limit. Reduce the page size when possible. |
 | `invalid_response` | The service returned data in an unsupported or inconsistent form. The server does not guess missing data. |

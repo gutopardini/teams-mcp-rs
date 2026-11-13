@@ -17,7 +17,9 @@ The implementation is informed by the existing project's discoveries:
   ID is built in while the MCP session remains separate. For Graph, an authorized
   app registration must be configured instead, as described above.
 - **History security:** constrain pagination to the expected service origin and
-  exact resource, including validation before obtaining or forwarding a token.
+  exact resource before forwarding a token. The Graph adapter validates the
+  cursor before obtaining a token; the native adapter first obtains its regional
+  service session, then validates the cursor before forwarding its token.
 - **Messages and threads:** keep channel roots and replies distinct, expose
   source identity and timestamps, bound content, and indicate incomplete pages.
 - **Events:** retain the original project's reconnection and reconciliation
