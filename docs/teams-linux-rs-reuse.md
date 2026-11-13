@@ -5,6 +5,10 @@ Graph permissions and tenant consent remain prerequisites. The existing desktop
 client uses native Teams services for chat history; this MCP does not yet have
 that adapter. Microsoft rejected the built-in, first-party Teams application ID
 for the MCP's requested Graph permissions with `AADSTS65002` during the Linux pilot.
+The desktop client also uses its native Teams session to send messages, so an
+MCP that reused this session would not establish that the underlying credential
+is restricted to reading. Any native integration needs a separate assessment of
+credential privileges, tenant authorization, and the read-only boundary.
 
 The implementation is informed by the existing project's discoveries:
 
