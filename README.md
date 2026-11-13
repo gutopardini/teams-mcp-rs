@@ -17,7 +17,8 @@ The implementation has been tested with fictional data, a local HTTP server,
 and an MCP client over stdio. **It has not yet been validated against a live
 Microsoft tenant.** Message drafts, approval, sending, real-time
 monitoring, the native Teams transport, and non-Linux credential storage are not
-implemented yet. See [PLAN.md](PLAN.md) and the [reuse notes](docs/teams-linux-rs-reuse.md).
+implemented yet. See [PLAN.md](PLAN.md), the [implementation notes](docs/implementation.md),
+and the [reuse notes](docs/teams-linux-rs-reuse.md).
 The initial English catalog covers errors and notices; CLI help and MCP tool
 descriptions are currently English literals and still need localization support.
 
@@ -90,6 +91,10 @@ cargo run -- logout --config /absolute/path/to/config.toml
 ```
 
 This clears the local Secret Service entry; it does not revoke a Microsoft grant.
+**Stop all running MCP server processes before signing out:** each process can
+hold a cached access token in memory. Configuration changes, including removal
+of allowed resources, also require restarting every running server. See the
+[operations guide](docs/operations.md) for details and troubleshooting.
 
 ## Available tools
 
@@ -149,4 +154,5 @@ cargo check
 ```
 
 The tests use fictional data and local mock services. They do not send messages
-or sign in to a real account. Keep all repository documentation in English.
+or sign in to a real account. The [implementation notes](docs/implementation.md)
+record the checks and their limits. Keep all repository documentation in English.
