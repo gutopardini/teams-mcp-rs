@@ -1,11 +1,14 @@
-# Teams MCP em Rust
+# Teams MCP in Rust
 
-Projeto em planejamento para conectar agentes de IA ao Microsoft Teams,
-aproveitando descobertas e código do `teams-linux-rs` quando apropriado.
+A planned Rust MCP project connecting AI agents to Microsoft Teams for
+context-aware queries, message drafts, and workflows in authorized channels,
+with access controls and human approval.
 
-A proposta é permitir consultas contextualizadas, criação de rascunhos e
-rotinas em canais autorizados, com controle de acesso, aprovação humana e
-automação opcional.
+The architecture targets multiple platforms, starting with **Linux**, with
+Windows and macOS planned for later. **English is the primary and default
+language**, and all project documentation is written in English.
+Internationalization is a core requirement, so additional product languages can
+be introduced without changing business logic.
 
-O escopo, a arquitetura, os guardrails e as etapas estão em
-[PLANEJAMENTO.md](PLANEJAMENTO.md). O projeto ainda não tem implementação.
+See the [project plan](PLAN.md) for architecture, guardrails, delivery phases,
+and open decisions. The project has not been implemented yet.
