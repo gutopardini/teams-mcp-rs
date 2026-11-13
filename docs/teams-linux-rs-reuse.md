@@ -1,14 +1,18 @@
 # Reusing teams-linux-rs discoveries
 
-The first read-only increment uses Microsoft Graph and an independent sign-in.
-This makes the initial channel and chat reads testable against documented APIs
-while preserving a separate boundary for a future adapter that reuses the
-native Teams transport. Graph permissions and tenant consent remain prerequisites.
+The first read-only increment uses Microsoft Graph and a separate sign-in.
+Graph permissions and tenant consent remain prerequisites. The existing desktop
+client uses native Teams services for chat history; this MCP does not yet have
+that adapter. Microsoft rejected the built-in, first-party Teams application ID
+for the MCP's requested Graph permissions with `AADSTS65002` during the Linux pilot.
 
 The implementation is informed by the existing project's discoveries:
 
 - **Session isolation:** use a dedicated credential-store entry and avoid
-  copying the desktop client's browser profile or saved session.
+  copying the desktop client's browser profile or saved session. Browser sign-in
+  can launch its existing authentication-window helper; the approved application
+  ID is built in while the MCP session remains separate. For Graph, an authorized
+  app registration must be configured instead, as described above.
 - **History security:** constrain pagination to the expected service origin and
   exact resource, including validation before obtaining or forwarding a token.
 - **Messages and threads:** keep channel roots and replies distinct, expose
@@ -20,7 +24,9 @@ The implementation is informed by the existing project's discoveries:
   implements no sending and makes no claim that the native transport is validated.
 
 No source code was copied from `teams-linux-rs` or Better Teams for this
-increment. The shared findings, provenance, license boundaries, source links,
+increment. The public application ID was embedded with the user's explicit
+approval; no other environment values were imported. The shared findings,
+provenance, license boundaries, source links,
 and differences between the local and published source revisions are documented
 in [PLAN.md](../PLAN.md). Any future code reuse requires a file-by-file license
 and dependency review.

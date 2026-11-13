@@ -2,22 +2,27 @@
 
 This guide describes the implemented read-only server. For setup prerequisites,
 the demo, and an example MCP client configuration, see the [README](../README.md).
-No live Microsoft tenant has been used to validate this implementation yet.
+Live sign-in was attempted in the Linux pilot but was rejected by Microsoft;
+successful sign-in and real message reads remain unvalidated.
 
 ## Configuration and access
 
 - Supply a TOML file to `serve`, `login`, and `logout` with `--config`. The
   [example configuration](../config.example.toml) uses fictional values. The
   file contains IDs and labels, not tokens; keep your own file private.
-- `tenant_id`, `client_id`, and `account_id` are UUIDs. The account ID must be
-  the user's object ID in the configured tenant. The account is verified
+- `tenant_id`, optional `client_id`, and `account_id` are UUIDs. The Teams Linux
+  application ID is used when `client_id` is omitted; however, Microsoft rejected
+  this first-party ID for the MCP's requested Graph permissions with `AADSTS65002`.
+  Set `client_id` to a registration authorized for those delegated permissions.
+  The account ID must be the user's object ID in the configured tenant. The account is verified
   against Graph `/me` before a newly obtained refresh token is stored and before
   a refreshed access token is used for message reads.
 - Each allowed channel is an exact team UUID and channel ID pair. Each allowed
   chat has an exact chat ID. The server does not discover resources for you;
   obtain their IDs through an authorized Teams or administrator workflow.
 - Remove the example entries and add only the intended resources. At least one
-  channel or chat is required for sign-in. The configuration rejects unknown
+  channel or chat is required for normal sign-in; `--bootstrap-chat` permits
+  initial read-only chat authorization before choosing a chat. The configuration rejects unknown
   fields, duplicate resources, invalid IDs, and files larger than 128 KiB.
 - `language` defaults to `en-US`. Only the English catalog is currently bundled;
   an unavailable valid locale falls back to English. CLI help and MCP tool
@@ -36,7 +41,9 @@ process and credential isolation when that threat is relevant.
 
 ## Session lifecycle
 
-`login` initiates a separate device-code flow only when explicitly run. It stores
+`login` starts a separate browser or device-code flow only when explicitly run.
+On Linux, `--webview-helper` can launch the existing Teams Linux authentication
+window with PKCE. Device-code fallback opens the system browser. It stores
 the refresh token in a dedicated Secret Service entry keyed by application,
 tenant, client, and account. The server lazily obtains an access token on the
 first authorized read, verifies the account through Graph, and caches the token
@@ -95,6 +102,7 @@ or tokens for diagnosis.
 | `invalid_cursor` | The cursor is malformed or targets a different origin, resource, or thread. Use an unmodified cursor returned for the same target. |
 | `authentication_required` | No saved session was found. Run the explicit login command for this configuration. |
 | `authentication_failed` | Sign-in, token refresh, or Graph account verification failed. Check tenant policy and consent, then sign in again if needed. |
+| `incompatible_client` | Microsoft rejected the client ID for the requested permissions (`AADSTS65002`). Configure an authorized app registration and follow the tenant's consent process. |
 | `account_mismatch` | The signed-in account's Graph ID differs from `account_id`. Use the intended account and verify the configured object ID. |
 | `credential_store_unavailable` | Secret Service or `secret-tool` could not be used. Check the Linux desktop keyring; tokens are not written to a plaintext fallback. |
 | `unsupported_platform` | This platform's credential-store adapter is not implemented. The fictional demo remains available. |

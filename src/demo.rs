@@ -12,7 +12,11 @@ use crate::{
 pub struct DemoSource;
 
 pub fn demo_config() -> Config {
-    toml::from_str(include_str!("../config.example.toml")).expect("valid fictional configuration")
+    let mut config: Config = toml::from_str(include_str!("../config.example.toml"))
+        .expect("valid fictional configuration");
+    config.identity.client_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002")
+        .expect("valid fictional client ID");
+    config
 }
 
 fn root(target: &Target) -> Message {

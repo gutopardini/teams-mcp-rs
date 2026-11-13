@@ -21,6 +21,7 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct Identity {
     pub tenant_id: Uuid,
+    #[serde(default = "default_client_id")]
     pub client_id: Uuid,
     pub account_id: Uuid,
 }
@@ -95,7 +96,11 @@ impl Config {
     }
 
     pub fn scopes(&self) -> Result<Vec<&'static str>> {
-        if self.channels.is_empty() && self.chats.is_empty() {
+        self.scopes_for_login(false)
+    }
+
+    pub fn scopes_for_login(&self, bootstrap_chat: bool) -> Result<Vec<&'static str>> {
+        if self.channels.is_empty() && self.chats.is_empty() && !bootstrap_chat {
             return Err(AppError::NoResources);
         }
         let mut scopes = vec![
@@ -106,11 +111,15 @@ impl Config {
         if !self.channels.is_empty() {
             scopes.push("https://graph.microsoft.com/ChannelMessage.Read.All");
         }
-        if !self.chats.is_empty() {
+        if !self.chats.is_empty() || bootstrap_chat {
             scopes.push("https://graph.microsoft.com/Chat.Read");
         }
         Ok(scopes)
     }
+}
+
+fn default_client_id() -> Uuid {
+    Uuid::parse_str(crate::application_id::APPLICATION_ID).expect("valid built-in application ID")
 }
 
 fn default_language() -> String {
@@ -162,6 +171,13 @@ mod tests {
         );
         config.channels.clear();
         assert!(matches!(config.scopes(), Err(AppError::NoResources)));
+        let bootstrap = config.scopes_for_login(true).unwrap();
+        assert!(bootstrap.iter().any(|scope| scope.ends_with("/Chat.Read")));
+        assert!(
+            !bootstrap
+                .iter()
+                .any(|scope| scope.ends_with("/ChannelMessage.Read.All"))
+        );
     }
 
     #[test]

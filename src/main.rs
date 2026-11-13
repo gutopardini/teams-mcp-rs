@@ -35,10 +35,16 @@ enum Commands {
         #[arg(long)]
         demo: bool,
     },
-    /// Sign in using a separate Microsoft device authorization flow.
+    /// Sign in using a separate Microsoft browser or device authorization flow.
     Login {
         #[arg(long)]
         config: PathBuf,
+        /// Open the existing Teams Linux authentication window.
+        #[arg(long)]
+        webview_helper: Option<PathBuf>,
+        /// Request read-only chat permission before choosing a specific chat.
+        #[arg(long)]
+        bootstrap_chat: bool,
     },
     /// Remove this application's stored refresh token.
     Logout {
@@ -79,10 +85,18 @@ async fn run(cli: Cli) -> Result<()> {
                 .map_err(|_| AppError::Protocol)?;
             Ok(())
         }
-        Commands::Login { config } => {
+        Commands::Login {
+            config,
+            webview_helper,
+            bootstrap_chat,
+        } => {
             let config = Config::load(&config)?;
             let auth = MicrosoftAuth::new(config, Arc::new(SystemSecretStore))?;
-            auth.login().await?;
+            if let Some(helper) = webview_helper {
+                auth.browser_login(&helper, bootstrap_chat).await?;
+            } else {
+                auth.device_login(bootstrap_chat).await?;
+            }
             println!(
                 "Sign-in completed. The refresh token is stored in the system credential store."
             );

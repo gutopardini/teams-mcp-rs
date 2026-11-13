@@ -10,7 +10,7 @@ describes configuration, session handling, and errors.
 | --- | --- |
 | `src/main.rs` | CLI subcommands: `serve`, explicit `login`, and `logout`. Server mode uses MCP over stdio. |
 | `src/config.rs` | Parses and validates the explicit account and resource allowlist; derives requested delegated scopes. |
-| `src/auth.rs` | Microsoft device-code and refresh flows, account verification, in-memory access-token cache, and the Linux Secret Service adapter. |
+| `src/auth.rs` | Microsoft browser sign-in with PKCE, device-code and refresh flows, account verification, in-memory access-token cache, and the Linux Secret Service adapter. |
 | `src/graph.rs` | Read-only Microsoft Graph requests, validated pagination, bounded responses, and message normalization. |
 | `src/backend.rs` | Shared message models, access-policy checks before backend calls, thread reads, and bounded local search. |
 | `src/demo.rs` | Fixed fictional data with no network or credential access. |
@@ -61,6 +61,14 @@ On November 13, 2026, commit `43d29d0` was checked on Linux with:
 - `cargo build --release --locked --offline`: the release build completed.
 
 The authentication and Graph services in those tests were local fakes; the MCP
-demo used fictional data. There was no sign-in to Microsoft, real message read,
-message send, or validation of the actual Secret Service integration. Windows,
-macOS, tenant-specific policies, and production performance remain unvalidated.
+demo used fictional data. Subsequently, a Linux browser-based device sign-in
+attempt with the built-in Teams client ID was rejected by Microsoft with
+`AADSTS65002` while requesting Graph chat access. There has been no successful
+sign-in, real message read, message send, or validation of the actual Secret
+Service integration. Windows, macOS, other tenant-specific policies, and
+production performance remain unvalidated.
+
+The browser and device-code changes were checked locally on Linux with 17 unit
+tests, one MCP stdio integration test, Clippy with warnings denied, and a
+release build. The browser helper and authentication responses in those tests
+are local fixtures; these checks do not change the live sign-in result above.

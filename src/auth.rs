@@ -1,11 +1,14 @@
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 #[cfg(target_os = "linux")]
 use std::process::Stdio;
 
 use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use rand::{RngCore, rngs::OsRng};
 use reqwest::{Client, Response, redirect::Policy};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 #[cfg(target_os = "linux")]
 use tokio::{io::AsyncWriteExt, process::Command};
 use tokio::{sync::Mutex, time::Instant};
@@ -20,6 +23,7 @@ use crate::{
 const AUTHORITY: &str = "https://login.microsoftonline.com/";
 const GRAPH_ME: &str = "https://graph.microsoft.com/v1.0/me?$select=id";
 const MAX_AUTH_RESPONSE: usize = 64 * 1024;
+const NATIVE_REDIRECT: &str = "https://login.microsoftonline.com/common/oauth2/nativeclient";
 
 pub fn http_client() -> Result<Client> {
     Client::builder()
@@ -201,6 +205,50 @@ struct TokenResponse {
 #[derive(Deserialize)]
 struct TokenError {
     error: String,
+    #[serde(default)]
+    error_codes: Vec<u32>,
+    #[serde(default)]
+    error_description: Option<String>,
+}
+
+impl TokenError {
+    fn app_error(&self) -> AppError {
+        if self.error_codes.contains(&65002)
+            || self
+                .error_description
+                .as_deref()
+                .is_some_and(|description| description.contains("AADSTS65002"))
+        {
+            AppError::IncompatibleClient
+        } else {
+            AppError::AuthenticationFailed
+        }
+    }
+}
+
+async fn authentication_error(response: Response) -> AppError {
+    let Ok(data) = bounded_body(response, MAX_AUTH_RESPONSE).await else {
+        return AppError::AuthenticationFailed;
+    };
+    let data = Zeroizing::new(data);
+    serde_json::from_slice::<TokenError>(&data)
+        .map(|error| error.app_error())
+        .unwrap_or(AppError::AuthenticationFailed)
+}
+
+#[derive(Serialize)]
+struct WebViewRequest<'a> {
+    authorize_url: &'a str,
+    redirect_uri: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum WebViewReply {
+    Callback { url: String },
+    UseDeviceCode,
+    Cancelled,
+    Failed { message: String },
 }
 
 #[derive(Deserialize)]
@@ -238,7 +286,11 @@ impl MicrosoftAuth {
 
     /// Called only by the explicit CLI login command, not by the MCP server.
     pub async fn login(&self) -> Result<()> {
-        let scope = self.config.scopes()?.join(" ");
+        self.device_login(false).await
+    }
+
+    pub async fn device_login(&self, bootstrap_chat: bool) -> Result<()> {
+        let scope = self.config.scopes_for_login(bootstrap_chat)?.join(" ");
         let client_id = self.config.identity.client_id.to_string();
         let response = self
             .client
@@ -248,21 +300,26 @@ impl MicrosoftAuth {
             .await
             .map_err(|_| AppError::Network)?;
         if !response.status().is_success() {
-            return Err(AppError::AuthenticationFailed);
+            return Err(authentication_error(response).await);
         }
         let data = Zeroizing::new(bounded_body(response, MAX_AUTH_RESPONSE).await?);
-        let device: DeviceCode =
-            serde_json::from_slice(&data).map_err(|_| AppError::InvalidResponse)?;
+        let device: DeviceCode = serde_json::from_slice(&data).map_err(|_| {
+            eprintln!("Authentication stage: device-code response format.");
+            AppError::InvalidResponse
+        })?;
         if !safe_verification(&device.verification_uri, &device.user_code)
             || device.expires_in == 0
             || device.expires_in > 1800
         {
+            eprintln!("Authentication stage: device-code response validation.");
             return Err(AppError::InvalidResponse);
         }
         println!(
             "Open {} and enter code {}",
             device.verification_uri, device.user_code
         );
+        #[cfg(not(test))]
+        let _ = webbrowser::open(&device.verification_uri);
         let device_code = Zeroizing::new(device.device_code);
         let mut interval = device.interval.clamp(1, 60);
         let deadline = Instant::now() + Duration::from_secs(device.expires_in);
@@ -285,12 +342,15 @@ impl MicrosoftAuth {
             let success = response.status().is_success();
             let data = Zeroizing::new(bounded_body(response, MAX_AUTH_RESPONSE).await?);
             if success {
-                let token: TokenResponse =
-                    serde_json::from_slice(&data).map_err(|_| AppError::InvalidResponse)?;
+                let token: TokenResponse = serde_json::from_slice(&data).map_err(|_| {
+                    eprintln!("Authentication stage: device-token response format.");
+                    AppError::InvalidResponse
+                })?;
                 let access = Zeroizing::new(token.access_token);
                 let refresh = token.refresh_token.ok_or(AppError::AuthenticationFailed)?;
                 let refresh = Zeroizing::new(refresh);
                 if access.is_empty() || refresh.is_empty() || token.expires_in == 0 {
+                    eprintln!("Authentication stage: device-token response validation.");
                     return Err(AppError::InvalidResponse);
                 }
                 self.verify_account(access.as_str()).await?;
@@ -304,9 +364,80 @@ impl MicrosoftAuth {
             match error.error.as_str() {
                 "authorization_pending" => {}
                 "slow_down" => interval = interval.saturating_add(5).min(60),
-                _ => return Err(AppError::AuthenticationFailed),
+                _ => return Err(error.app_error()),
             }
         }
+    }
+
+    /// Uses the existing Teams Linux sign-in window without reading its session.
+    pub async fn browser_login(&self, helper: &Path, bootstrap_chat: bool) -> Result<()> {
+        let scopes = self.config.scopes_for_login(bootstrap_chat)?.join(" ");
+        let mut verifier_bytes = [0u8; 48];
+        let mut state_bytes = [0u8; 16];
+        OsRng.fill_bytes(&mut verifier_bytes);
+        OsRng.fill_bytes(&mut state_bytes);
+        let verifier = Zeroizing::new(URL_SAFE_NO_PAD.encode(verifier_bytes));
+        let state = Zeroizing::new(URL_SAFE_NO_PAD.encode(state_bytes));
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let client_id = self.config.identity.client_id.to_string();
+        let mut authorize = self.endpoint("authorize")?;
+        authorize
+            .query_pairs_mut()
+            .append_pair("client_id", &client_id)
+            .append_pair("response_type", "code")
+            .append_pair("redirect_uri", NATIVE_REDIRECT)
+            .append_pair("scope", &scopes)
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("state", state.as_str());
+        let reply = capture_webview(helper, authorize.as_str()).await?;
+        let code = match reply {
+            WebViewReply::Callback { url } => {
+                let url = Zeroizing::new(url);
+                authorization_code(url.as_str(), state.as_str())?
+            }
+            WebViewReply::UseDeviceCode => {
+                eprintln!("The sign-in window requested device-code authentication.");
+                return self.device_login(bootstrap_chat).await;
+            }
+            WebViewReply::Cancelled => return Err(AppError::AuthenticationCancelled),
+            WebViewReply::Failed { message } => {
+                let _ = message;
+                return Err(AppError::BrowserUnavailable);
+            }
+        };
+        let response = self
+            .client
+            .post(self.endpoint("token")?)
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("client_id", client_id.as_str()),
+                ("code", code.as_str()),
+                ("redirect_uri", NATIVE_REDIRECT),
+                ("code_verifier", verifier.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|_| AppError::Network)?;
+        if !response.status().is_success() {
+            return Err(authentication_error(response).await);
+        }
+        let data = Zeroizing::new(bounded_body(response, MAX_AUTH_RESPONSE).await?);
+        let token: TokenResponse = serde_json::from_slice(&data).map_err(|_| {
+            eprintln!("Authentication stage: browser-token response format.");
+            AppError::InvalidResponse
+        })?;
+        let access = Zeroizing::new(token.access_token);
+        let refresh = Zeroizing::new(token.refresh_token.ok_or(AppError::AuthenticationFailed)?);
+        if access.is_empty() || refresh.is_empty() || token.expires_in == 0 {
+            eprintln!("Authentication stage: browser-token response validation.");
+            return Err(AppError::InvalidResponse);
+        }
+        self.verify_account(access.as_str()).await?;
+        self.store
+            .save(&self.config.identity, refresh.as_str())
+            .await?;
+        Ok(())
     }
 
     pub async fn logout(&self) -> Result<()> {
@@ -327,13 +458,97 @@ impl MicrosoftAuth {
             return Err(AppError::AuthenticationFailed);
         }
         let data = Zeroizing::new(bounded_body(response, MAX_AUTH_RESPONSE).await?);
-        let profile: GraphMe =
-            serde_json::from_slice(&data).map_err(|_| AppError::InvalidResponse)?;
+        let profile: GraphMe = serde_json::from_slice(&data).map_err(|_| {
+            eprintln!("Authentication stage: Graph account response format.");
+            AppError::InvalidResponse
+        })?;
         if profile.id != self.config.identity.account_id {
             return Err(AppError::AccountMismatch);
         }
         Ok(())
     }
+}
+
+#[cfg(target_os = "linux")]
+async fn capture_webview(helper: &Path, authorize: &str) -> Result<WebViewReply> {
+    let request = Zeroizing::new(
+        serde_json::to_vec(&WebViewRequest {
+            authorize_url: authorize,
+            redirect_uri: NATIVE_REDIRECT,
+        })
+        .map_err(|_| AppError::BrowserUnavailable)?,
+    );
+    let mut child = Command::new(helper)
+        .arg("--auth-webview-helper")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| AppError::BrowserUnavailable)?;
+    let mut stdin = child.stdin.take().ok_or(AppError::BrowserUnavailable)?;
+    stdin
+        .write_all(&request)
+        .await
+        .map_err(|_| AppError::BrowserUnavailable)?;
+    drop(stdin);
+    let output = tokio::time::timeout(Duration::from_secs(610), child.wait_with_output())
+        .await
+        .map_err(|_| AppError::AuthenticationCancelled)?
+        .map_err(|_| AppError::BrowserUnavailable)?;
+    if !output.status.success() || output.stdout.len() > MAX_AUTH_RESPONSE {
+        return Err(AppError::BrowserUnavailable);
+    }
+    let output = Zeroizing::new(output.stdout);
+    serde_json::from_slice(&output).map_err(|_| AppError::BrowserUnavailable)
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn capture_webview(_helper: &Path, _authorize: &str) -> Result<WebViewReply> {
+    Err(AppError::UnsupportedPlatform)
+}
+
+fn authorization_code(callback: &str, expected_state: &str) -> Result<Zeroizing<String>> {
+    if callback.len() > 8192 {
+        return Err(AppError::AuthenticationFailed);
+    }
+    let url = Url::parse(callback).map_err(|_| AppError::AuthenticationFailed)?;
+    let expected = Url::parse(NATIVE_REDIRECT).expect("valid redirect");
+    if url.origin() != expected.origin()
+        || url.path() != expected.path()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || (url.query().is_some() && url.fragment().is_some())
+    {
+        return Err(AppError::AuthenticationFailed);
+    }
+    let raw = url.query().or(url.fragment()).unwrap_or("");
+    let pairs: Vec<_> = url::form_urlencoded::parse(raw.as_bytes()).collect();
+    let unique = |name: &str| -> Result<Option<String>> {
+        let mut matches = pairs.iter().filter(|(key, _)| key == name);
+        let value = matches.next().map(|(_, value)| value.to_string());
+        if matches.next().is_some() {
+            return Err(AppError::AuthenticationFailed);
+        }
+        Ok(value)
+    };
+    if unique("state")?.as_deref() != Some(expected_state) {
+        return Err(AppError::AuthenticationFailed);
+    }
+    if unique("error")?.is_some() {
+        return if unique("error_description")?
+            .as_deref()
+            .is_some_and(|description| description.contains("AADSTS65002"))
+        {
+            Err(AppError::IncompatibleClient)
+        } else {
+            Err(AppError::AuthenticationFailed)
+        };
+    }
+    unique("code")?
+        .filter(|code| !code.is_empty())
+        .map(Zeroizing::new)
+        .ok_or(AppError::AuthenticationFailed)
 }
 
 fn safe_verification(uri: &str, code: &str) -> bool {
@@ -343,7 +558,12 @@ fn safe_verification(uri: &str, code: &str) -> bool {
     url.scheme() == "https"
         && matches!(
             url.host_str(),
-            Some("microsoft.com" | "www.microsoft.com" | "login.microsoftonline.com")
+            Some(
+                "microsoft.com"
+                    | "www.microsoft.com"
+                    | "login.microsoft.com"
+                    | "login.microsoftonline.com"
+            )
         )
         && url.username().is_empty()
         && url.password().is_none()
@@ -381,7 +601,7 @@ impl TokenProvider for MicrosoftAuth {
             .await
             .map_err(|_| AppError::Network)?;
         if !response.status().is_success() {
-            return Err(AppError::AuthenticationFailed);
+            return Err(authentication_error(response).await);
         }
         let data = Zeroizing::new(bounded_body(response, MAX_AUTH_RESPONSE).await?);
         let token: TokenResponse =
@@ -519,6 +739,10 @@ mod tests {
             "https://microsoft.com/devicelogin",
             "ABCD-EFGH"
         ));
+        assert!(safe_verification(
+            "https://login.microsoft.com/common/oauth2/deviceauth",
+            "ABCD-EFGH"
+        ));
         for uri in [
             "http://microsoft.com/devicelogin",
             "https://microsoft.com.evil.example/devicelogin",
@@ -532,6 +756,55 @@ mod tests {
             "https://microsoft.com/devicelogin",
             "BAD\nCODE"
         ));
+    }
+
+    #[test]
+    fn browser_callback_requires_the_exact_redirect_and_unique_state() {
+        let good = format!("{NATIVE_REDIRECT}?code=fictional-code&state=expected");
+        assert!(authorization_code(&good, "expected").is_ok());
+        let denied = format!(
+            "{NATIVE_REDIRECT}?error=invalid_request&error_description=AADSTS65002&state=expected"
+        );
+        assert!(matches!(
+            authorization_code(&denied, "expected"),
+            Err(AppError::IncompatibleClient)
+        ));
+        for callback in [
+            "https://attacker.example/common/oauth2/nativeclient?code=x&state=expected",
+            "https://login.microsoftonline.com/common/oauth2/nativeclient?code=x&state=wrong",
+            "https://login.microsoftonline.com/common/oauth2/nativeclient?code=x&state=expected&state=expected",
+            "https://login.microsoftonline.com/common/oauth2/nativeclient?code=x&code=y&state=expected",
+            "https://login.microsoftonline.com/common/oauth2/nativeclient?code=x&state=expected#other",
+        ] {
+            assert!(authorization_code(callback, "expected").is_err());
+        }
+    }
+
+    #[test]
+    fn reports_first_party_consent_rejection_without_exposing_error_details() {
+        let denied: TokenError = serde_json::from_value(json!({
+            "error": "invalid_grant", "error_codes": [65002],
+            "error_description": "private diagnostic details"
+        }))
+        .unwrap();
+        assert!(matches!(denied.app_error(), AppError::IncompatibleClient));
+        let other: TokenError = serde_json::from_value(json!({"error": "access_denied"})).unwrap();
+        assert!(matches!(other.app_error(), AppError::AuthenticationFailed));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn browser_login_uses_pkce_and_stores_only_after_account_verification() {
+        let (mut auth, store, token_calls, profile_calls, task) = fake_auth(false, false).await;
+        auth.config.channels.clear();
+        auth.config.chats.clear();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_teams_webview.py");
+        auth.browser_login(&helper, true).await.unwrap();
+        assert_eq!(token_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(profile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(store.saves.load(Ordering::SeqCst), 1);
+        task.abort();
     }
 
     #[tokio::test]

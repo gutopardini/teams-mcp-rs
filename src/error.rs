@@ -16,6 +16,12 @@ pub enum AppError {
     AuthenticationRequired,
     #[error("Authentication failed")]
     AuthenticationFailed,
+    #[error("The application ID cannot request these permissions")]
+    IncompatibleClient,
+    #[error("Authentication was cancelled")]
+    AuthenticationCancelled,
+    #[error("The sign-in window is unavailable")]
+    BrowserUnavailable,
     #[error("The signed-in account does not match the configured account")]
     AccountMismatch,
     #[error("The secure credential store is unavailable")]
@@ -45,6 +51,9 @@ impl AppError {
             Self::ResponseTooLarge => "response_too_large",
             Self::AuthenticationRequired => "authentication_required",
             Self::AuthenticationFailed => "authentication_failed",
+            Self::IncompatibleClient => "incompatible_client",
+            Self::AuthenticationCancelled => "authentication_cancelled",
+            Self::BrowserUnavailable => "browser_unavailable",
             Self::AccountMismatch => "account_mismatch",
             Self::CredentialStore => "credential_store_unavailable",
             Self::UnsupportedPlatform => "unsupported_platform",
@@ -65,6 +74,9 @@ impl AppError {
             Self::ResponseTooLarge => "error-response-too-large",
             Self::AuthenticationRequired => "error-authentication-required",
             Self::AuthenticationFailed => "error-authentication-failed",
+            Self::IncompatibleClient => "error-incompatible-client",
+            Self::AuthenticationCancelled => "error-authentication-cancelled",
+            Self::BrowserUnavailable => "error-browser-unavailable",
             Self::AccountMismatch => "error-account-mismatch",
             Self::CredentialStore => "error-credential-store",
             Self::UnsupportedPlatform => "error-unsupported-platform",

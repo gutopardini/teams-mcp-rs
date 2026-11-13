@@ -1,10 +1,12 @@
-# Replace the fictional UUIDs and IDs with your own app and allowed resources.
+# Replace the fictional UUIDs and IDs with your account and allowed resources.
 # This file contains no tokens. Keep your real configuration outside Git.
 language = "en-US"
 
 [identity]
 tenant_id = "00000000-0000-0000-0000-000000000001"
-client_id = "00000000-0000-0000-0000-000000000002"
+# The Teams Linux application ID is the default, but Microsoft rejected its use
+# for this MCP's Graph permissions. Set client_id to an authorized registration.
+# client_id = "00000000-0000-0000-0000-000000000002"
 account_id = "00000000-0000-0000-0000-000000000004"
 
 [[channels]]

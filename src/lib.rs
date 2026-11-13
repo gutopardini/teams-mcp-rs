@@ -1,3 +1,4 @@
+mod application_id;
 pub mod auth;
 pub mod backend;
 pub mod config;
