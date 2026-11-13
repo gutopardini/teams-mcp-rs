@@ -6,4 +6,5 @@ pub mod demo;
 pub mod error;
 pub mod graph;
 pub mod locale;
+pub mod native;
 pub mod server;

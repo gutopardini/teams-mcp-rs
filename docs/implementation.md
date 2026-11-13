@@ -12,6 +12,7 @@ describes configuration, session handling, and errors.
 | `src/config.rs` | Parses and validates the explicit account and resource allowlist; derives requested delegated scopes. |
 | `src/auth.rs` | Microsoft browser sign-in with PKCE, device-code and refresh flows, account verification, in-memory access-token cache, and the Linux Secret Service adapter. |
 | `src/graph.rs` | Read-only Microsoft Graph requests, validated pagination, bounded responses, and message normalization. |
+| `src/native.rs` | Native Teams session exchange, local chat discovery, bounded text chat reads, and validated regional service URLs and cursors. |
 | `src/backend.rs` | Shared message models, access-policy checks before backend calls, thread reads, and bounded local search. |
 | `src/demo.rs` | Fixed fictional data with no network or credential access. |
 | `src/server.rs` | Read-only MCP tools and structured results or sanitized tool errors. |
@@ -28,9 +29,11 @@ not implemented or validated.
    entries in that loaded allowlist; they do not discover resources remotely.
 2. A message, context, thread, or search request is checked against the exact
    configured chat or channel before the backend can obtain an access token.
-3. If needed, the authentication provider loads this application's refresh token,
-   requests a Graph access token, and verifies the configured account through
-   `GET /v1.0/me`. Refreshes are serialized within one server process.
+3. If needed, the authentication provider loads this application's refresh token.
+   Graph verifies the account through `GET /v1.0/me`; native mode checks the ID
+   token obtained directly over TLS from Microsoft's token endpoint. Native ID
+   token signatures are not independently verified; the direct TLS connection
+   is the response trust boundary. Refreshes are serialized within one process.
 4. Graph requests use HTTPS in production, do not follow redirects, and are
    bounded by request timeouts and response-size limits. A pagination cursor is
    checked against the expected origin and path before token acquisition.
@@ -43,7 +46,9 @@ The Graph adapter reads `/chats/{id}/messages` or
 `/teams/{team}/channels/{channel}/messages`, with separate root and reply
 requests for channel threads. Authentication uses POST requests to Microsoft's
 identity endpoints; there are no message-sending or mutation tools. The server
-does not mark messages as read.
+does not mark messages as read. Native mode exchanges the Teams token for a
+native session and reads text chat history only. Its credential may also grant
+the ability to send even though the server implements no sending operation.
 
 These checks are application guardrails, not protection against an unrestricted
 agent running with the same OS-user privileges. Approval, a protected sending
@@ -63,12 +68,20 @@ On November 13, 2026, commit `43d29d0` was checked on Linux with:
 The authentication and Graph services in those tests were local fakes; the MCP
 demo used fictional data. Subsequently, a Linux browser-based device sign-in
 attempt with the built-in Teams client ID was rejected by Microsoft with
-`AADSTS65002` while requesting Graph chat access. There has been no successful
-sign-in, real message read, message send, or validation of the actual Secret
-Service integration. Windows, macOS, other tenant-specific policies, and
-production performance remain unvalidated.
+`AADSTS65002` while requesting Graph chat access. That Graph attempt did not
+complete sign-in or read messages. Windows, macOS, other tenant-specific
+policies, and production performance remain unvalidated.
 
-The browser and device-code changes were checked locally on Linux with 17 unit
-tests, one MCP stdio integration test, Clippy with warnings denied, and a
-release build. The browser helper and authentication responses in those tests
-are local fixtures; these checks do not change the live sign-in result above.
+After that Graph rejection, native device-code sign-in succeeded on Linux and a
+user-selected chat returned 10 messages in a live read. A live MCP stdio client
+initialized the server, read that same authorized chat, and confirmed denial of
+an unlisted chat. Terminal-only discovery, cancellation, and re-selection of
+the already authorized chat were also exercised without changing the allowlist.
+Message contents were not printed by those tests.
+This confirms only that selected account and chat; it does not establish message
+completeness or support for other tenants.
+
+The current local checks include native-service fixture tests, URL and cursor
+restriction checks, 23 unit tests, an MCP stdio integration test, Clippy with
+warnings denied, and a release build. Local fixtures do not contact Microsoft or
+send messages.

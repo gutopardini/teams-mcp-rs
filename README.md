@@ -7,17 +7,16 @@ message catalog is designed to accommodate additional languages.
 
 ## Current status
 
-The first increment provides a **read-only** MCP server, a Microsoft Graph
-adapter, separate browser or device-code sign-in, an explicit per-chat and per-channel
-allowlist, and a network-free demo. Channel listings contain root posts only;
-use the thread tool to retrieve a root and its replies. Each response identifies
-its coverage and treats Teams message text as untrusted data.
+The first increment provides a **read-only** MCP server, Microsoft Graph and
+native Teams chat adapters, separate browser or device-code sign-in, an explicit
+per-chat and per-channel allowlist, and a network-free demo. Each response
+identifies its coverage and treats Teams message text as untrusted data.
 
-The implementation has been tested with fictional data, a local HTTP server,
-and an MCP client over stdio. **It has not yet been validated against a live
-Microsoft tenant.** Message drafts, approval, sending, real-time
-monitoring, the native Teams transport, and non-Linux credential storage are not
-implemented yet. See [PLAN.md](PLAN.md), the [implementation notes](docs/implementation.md),
+On Linux, native sign-in and a page of 10 messages in one explicitly selected
+chat were validated against one live tenant. Other tenants, native channel
+reads, message completeness, and non-Linux credential stores remain unvalidated.
+Message drafts, approval, sending, and real-time monitoring are not implemented.
+See [PLAN.md](PLAN.md), the [implementation notes](docs/implementation.md),
 and the [reuse notes](docs/teams-linux-rs-reuse.md).
 The initial English catalog covers errors and notices; CLI help and MCP tool
 descriptions are currently English literals and still need localization support.
@@ -27,10 +26,9 @@ descriptions are currently English literals and still need localization support.
 - Rust 1.88 or later and Cargo.
 - Linux for the initial credential-store implementation, with Secret Service and
   the `secret-tool` executable available. The demo does not need a keyring.
-- For live use, a work or school account and a tenant that permits the app and
-  delegated Graph permissions. The approved application ID from `teams-linux-rs`
-  is built in; a different app registration can be configured if needed. Tenant
-  administrators may need to approve access.
+- For live use, a work or school account and a tenant that permits the selected
+  application and backend. The application ID from `teams-linux-rs` is built in;
+  a different application registration can be configured if needed.
 - The browser-based Linux sign-in reuses the existing `teams-linux-rs`
   authentication window as a helper process. It uses a separate MCP session and
   does not read the desktop client's stored credentials.
@@ -50,8 +48,15 @@ the MCP requested Graph chat permissions. The ID is correct, but it does not
 give this application permission to request those scopes. For the current Graph
 adapter, configure an application registration authorized for the required
 delegated permissions via `identity.client_id`; tenant consent policies still
-apply. The native Teams transport used by `teams-linux-rs` is not implemented in
-this MCP. See Microsoft's [error-code reference](https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes).
+apply. The separate native Teams adapter uses a Teams-scoped credential instead.
+See Microsoft's [error-code reference](https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes).
+
+The native backend requests the Teams `/.default` scope plus OpenID identity
+scopes. **This credential can have capabilities beyond reading, including
+sending, even though this MCP exposes no sending tools.** It is separate from
+the desktop client's stored session. Its use requires the user's authorization
+and compliance with the tenant's policies; the per-chat allowlist does not
+reduce the underlying credential's privileges.
 
 ## Try the fictional demo
 
@@ -67,15 +72,18 @@ or credential lookup.
 
 1. Copy `config.example.toml` to a private location outside the repository.
 2. Set `tenant_id` to the tenant UUID and `account_id` to your user's object UUID
-   in that tenant. Set `client_id` to an app registration authorized to request
-   the Graph permissions described above. The built-in Teams ID is used when
-   `client_id` is omitted, subject to the limitation above.
-3. Replace the fictional entries with the exact team/channel pairs and chat IDs
-   you want to expose. Remove entries you do not need. Labels are local only.
-4. Sign in explicitly, then configure your MCP client to run the server:
+   in that tenant. Set `backend = "native_teams"` at the top level for native
+   chat reads; the built-in Teams ID is used when `client_id` is omitted. For
+   Graph, use `backend = "graph"` and an authorized registration.
+3. Remove the fictional entries. Add only the exact resources you want to
+   expose, or choose a native chat using the command below. Native mode supports
+   chat reads only; channel reads require the Graph adapter.
+4. Sign in explicitly, choose a chat if needed, and configure your MCP client:
 
 ```sh
-cargo run -- login --config /absolute/path/to/config.toml
+cargo run -- login --config /absolute/path/to/config.toml --bootstrap-chat
+cargo run -- choose-chat --config /absolute/path/to/config.toml --list
+cargo run -- choose-chat --config /absolute/path/to/config.toml
 cargo build --release
 ```
 
@@ -87,8 +95,14 @@ cargo run -- login --config /absolute/path/to/config.toml \
   --webview-helper /absolute/path/to/teams-linux-rs/target/release/teams-linux-rs
 ```
 
-For initial sign-in before selecting a chat, add `--bootstrap-chat` to request
-read-only chat permission. This does not add chats to the MCP allowlist.
+For initial sign-in before selecting a chat, `--bootstrap-chat` permits the
+selected backend's sign-in without adding a chat to the MCP allowlist.
+`choose-chat --list` lists at most 100 recent chat entries in the terminal,
+marking already authorized chats without changing the allowlist. Without
+`--list`, the same command prompts for
+a number, adds that chat to the allowlist, and performs a short read test. All
+interaction after login is in the console. The native credential's privileges
+remain broader than the exposed MCP tools.
 Complete sign-in yourself in the browser window. The refresh token is stored in a
 dedicated Secret Service entry for this application, tenant, client, and
 account. The server does not copy cookies, read the `teams-linux-rs` session,
@@ -126,14 +140,15 @@ of allowed resources, also require restarting every running server. See the
 | --- | --- |
 | `teams_status` | Shows the selected backend, configured account and tenant IDs, resource counts, and read-only capabilities. It does not verify sign-in. |
 | `teams_list_teams`, `teams_list_channels`, `teams_list_chats` | List entries from the configured allowlist without querying Teams. |
-| `teams_get_messages` | Read a bounded page from an allowed chat or channel. |
+| `teams_get_messages` | Read a bounded page from an allowed chat, or from an allowed channel with the Graph backend. |
 | `teams_get_context` | Return the same bounded page with provenance, coverage, and an untrusted-content notice. It does not infer decisions. |
 | `teams_search_messages` | Search the text of up to three fetched pages within one allowed resource. Channel searches cover root posts only. |
 | `teams_get_thread` | Read an allowed channel post and a bounded page of its replies. |
 
 The maximum page size is 50. A returned `next_cursor` is accepted only for the
-same Graph origin and resource. Use the same page-size limit when following a
-cursor. Message text is bounded; attachments are counted but not opened. The
+same service origin and resource. Use the same page-size limit when following a
+cursor. Message text is bounded; attachments are not opened. Native chat results
+cover text messages only and report an unknown attachment count as `null`. The
 server does not mark messages as read.
 
 Search is a case-insensitive local substring match over fetched message text; it
@@ -160,8 +175,8 @@ other remote content as data rather than instructions.
 ## Security boundary
 
 The server denies resources not in its configuration before obtaining a token
-or contacting Graph. It validates pagination URLs, disables HTTP redirects,
-limits responses, verifies the signed-in account, and exposes no sending tool.
+or contacting the message backend. It validates pagination URLs, disables HTTP
+redirects, limits responses, checks the signed-in account, and exposes no sending tool.
 It does not log message bodies or tokens by design.
 
 The allowlist is an application boundary, not an OS sandbox. An agent with

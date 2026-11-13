@@ -1,14 +1,13 @@
 # Reusing teams-linux-rs discoveries
 
-The first read-only increment uses Microsoft Graph and a separate sign-in.
-Graph permissions and tenant consent remain prerequisites. The existing desktop
-client uses native Teams services for chat history; this MCP does not yet have
-that adapter. Microsoft rejected the built-in, first-party Teams application ID
-for the MCP's requested Graph permissions with `AADSTS65002` during the Linux pilot.
-The desktop client also uses its native Teams session to send messages, so an
-MCP that reused this session would not establish that the underlying credential
-is restricted to reading. Any native integration needs a separate assessment of
-credential privileges, tenant authorization, and the read-only boundary.
+The first increment supports Microsoft Graph and a separate native Teams chat
+adapter. Microsoft rejected the built-in, first-party Teams application ID for
+the MCP's requested Graph permissions with `AADSTS65002` during the Linux pilot.
+The native Teams sign-in and one selected chat read succeeded in that pilot.
+The desktop client also uses native Teams credentials to send messages. The
+user approved using a similarly privileged credential while the MCP exposes
+read-only operations; the credential itself is not restricted to reading.
+Tenant policies and permission to use the integration still apply.
 
 The implementation is informed by the existing project's discoveries:
 
@@ -23,9 +22,9 @@ The implementation is informed by the existing project's discoveries:
   source identity and timestamps, bound content, and indicate incomplete pages.
 - **Events:** retain the original project's reconnection and reconciliation
   findings for the planned monitor; no real-time transport is exposed yet.
-- **Transport limitations:** the existing native channel-reply adapter has local
-  fixture coverage but its live endpoint is not confirmed. This increment
-  implements no sending and makes no claim that the native transport is validated.
+- **Transport limitations:** native mode supports text chat reads only; it
+  does not implement channels, channel replies, or sending. A single live chat
+  read does not establish completeness or behavior across tenants.
 
 No source code was copied from `teams-linux-rs` or Better Teams for this
 increment. The public application ID was embedded with the user's explicit

@@ -261,10 +261,10 @@ fn normalize(value: GraphMessage, target: &Target, thread_root: Option<&str>) ->
         author,
         created_at: value.created_date_time,
         modified_at: value.last_modified_date_time,
-        deleted,
+        deleted: Some(deleted),
         text,
         text_truncated,
-        attachment_count: value.attachments.map_or(0, |attachments| attachments.len()),
+        attachment_count: Some(value.attachments.map_or(0, |attachments| attachments.len())),
         web_url: value.web_url,
         content_trust: "untrusted",
     })
@@ -380,7 +380,7 @@ mod tests {
         });
         let result = normalize(serde_json::from_value(input).unwrap(), &target, None).unwrap();
         assert!(result.text.unwrap().contains("Hello world"));
-        assert_eq!(result.attachment_count, 1);
+        assert_eq!(result.attachment_count, Some(1));
         assert_eq!(result.content_trust, "untrusted");
         let deleted = serde_json::json!({
             "id": "m2", "deletedDateTime": "2026-01-01T00:00:00Z",
@@ -406,7 +406,7 @@ mod tests {
         let result = normalize(serde_json::from_value(input).unwrap(), &target, None).unwrap();
         assert!(result.text_truncated);
         assert_eq!(result.text.unwrap().chars().count(), MAX_TEXT_CHARS);
-        assert_eq!(result.attachment_count, 0);
+        assert_eq!(result.attachment_count, Some(0));
     }
 
     #[tokio::test]

@@ -2,9 +2,10 @@
 
 Date: November 13, 2026
 
-Status: the first read-only Graph adapter, local demo, and MCP server have been
-implemented and tested against fictional local services. Live tenant integration,
-the native Teams adapter, monitoring, drafts, approval, and sending are pending.
+Status: read-only Graph and native Teams chat adapters, a local demo, and the MCP
+server are implemented. Native sign-in and one selected chat read passed in a
+Linux live-tenant pilot. Broader validation, monitoring, drafts, approval, and
+sending are pending.
 
 ## 1. Vision
 

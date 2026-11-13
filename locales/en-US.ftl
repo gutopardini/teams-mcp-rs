@@ -1,5 +1,6 @@
 error-forbidden = This resource is not explicitly authorized in the configuration.
 error-invalid-input = The request contains an invalid identifier or limit.
+error-unsupported-operation = This operation is not yet available for the selected backend.
 error-invalid-cursor = The pagination cursor is invalid or belongs to another resource.
 error-response-too-large = The service response exceeded the size limit.
 error-authentication-required = Sign in with the login command before reading messages.
@@ -7,6 +8,8 @@ error-authentication-failed = Authentication failed or expired. Sign in again.
 error-incompatible-client = Microsoft rejected this application ID for the requested permissions (AADSTS65002). Configure an app registration authorized for Microsoft Graph.
 error-authentication-cancelled = Authentication was cancelled or timed out.
 error-browser-unavailable = The Teams Linux sign-in window could not be opened.
+error-selection-unavailable = The chat selection could not read or write to the console.
+error-config-changed = The configuration changed during setup. No changes were saved; retry.
 error-account-mismatch = The signed-in account does not match the configured account ID.
 error-credential-store = Secure credential storage is unavailable. No token was stored in a file.
 error-unsupported-platform = Secure credential storage is not implemented for this platform yet.

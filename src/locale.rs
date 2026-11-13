@@ -59,6 +59,7 @@ mod tests {
         let errors = [
             AppError::Forbidden,
             AppError::InvalidInput,
+            AppError::UnsupportedOperation,
             AppError::InvalidCursor,
             AppError::ResponseTooLarge,
             AppError::AuthenticationRequired,
@@ -66,6 +67,8 @@ mod tests {
             AppError::IncompatibleClient,
             AppError::AuthenticationCancelled,
             AppError::BrowserUnavailable,
+            AppError::SelectionUnavailable,
+            AppError::ConfigChanged,
             AppError::AccountMismatch,
             AppError::CredentialStore,
             AppError::UnsupportedPlatform,

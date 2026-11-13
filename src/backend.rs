@@ -70,10 +70,12 @@ pub struct Message {
     pub author: Option<Author>,
     pub created_at: Option<String>,
     pub modified_at: Option<String>,
-    pub deleted: bool,
+    /// None when the backend cannot determine deletion state reliably.
+    pub deleted: Option<bool>,
     pub text: Option<String>,
     pub text_truncated: bool,
-    pub attachment_count: usize,
+    /// None when the backend cannot determine the count reliably.
+    pub attachment_count: Option<usize>,
     pub web_url: Option<String>,
     pub content_trust: &'static str,
 }
@@ -198,7 +200,7 @@ impl TeamsService {
         let mut pages_scanned = 0;
         let mut truncated = false;
         let mut source_text_truncated = false;
-        let coverage = message_coverage(&request.target);
+        let mut coverage = message_coverage(&request.target);
         for _ in 0..max_pages {
             let page = self
                 .messages(MessagesRequest {
@@ -207,6 +209,7 @@ impl TeamsService {
                     cursor,
                 })
                 .await?;
+            coverage = page.coverage;
             pages_scanned += 1;
             scanned += page.messages.len();
             for message in page.messages {
@@ -317,10 +320,10 @@ mod tests {
                     author: None,
                     created_at: None,
                     modified_at: None,
-                    deleted: false,
+                    deleted: Some(false),
                     text: Some("Fictional matching text".into()),
                     text_truncated: index == 0,
-                    attachment_count: 0,
+                    attachment_count: Some(0),
                     web_url: None,
                     content_trust: "untrusted",
                 })

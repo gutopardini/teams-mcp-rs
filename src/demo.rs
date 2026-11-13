@@ -32,10 +32,10 @@ fn root(target: &Target) -> Message {
         }),
         created_at: Some("2026-01-01T10:00:00Z".into()),
         modified_at: None,
-        deleted: false,
+        deleted: Some(false),
         text: Some("The team will investigate the fictional incident.".into()),
         text_truncated: false,
-        attachment_count: 0,
+        attachment_count: Some(0),
         web_url: None,
         content_trust: "untrusted",
     }

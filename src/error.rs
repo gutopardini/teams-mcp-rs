@@ -8,6 +8,8 @@ pub enum AppError {
     Forbidden,
     #[error("Invalid request")]
     InvalidInput,
+    #[error("This operation is not available for the selected backend")]
+    UnsupportedOperation,
     #[error("Invalid or unsafe pagination cursor")]
     InvalidCursor,
     #[error("Response exceeded the configured size limit")]
@@ -22,6 +24,10 @@ pub enum AppError {
     AuthenticationCancelled,
     #[error("The sign-in window is unavailable")]
     BrowserUnavailable,
+    #[error("Chat selection could not access the console")]
+    SelectionUnavailable,
+    #[error("The configuration changed during setup")]
+    ConfigChanged,
     #[error("The signed-in account does not match the configured account")]
     AccountMismatch,
     #[error("The secure credential store is unavailable")]
@@ -47,6 +53,7 @@ impl AppError {
         match self {
             Self::Forbidden => "forbidden",
             Self::InvalidInput => "invalid_input",
+            Self::UnsupportedOperation => "unsupported_operation",
             Self::InvalidCursor => "invalid_cursor",
             Self::ResponseTooLarge => "response_too_large",
             Self::AuthenticationRequired => "authentication_required",
@@ -54,6 +61,8 @@ impl AppError {
             Self::IncompatibleClient => "incompatible_client",
             Self::AuthenticationCancelled => "authentication_cancelled",
             Self::BrowserUnavailable => "browser_unavailable",
+            Self::SelectionUnavailable => "selection_unavailable",
+            Self::ConfigChanged => "config_changed",
             Self::AccountMismatch => "account_mismatch",
             Self::CredentialStore => "credential_store_unavailable",
             Self::UnsupportedPlatform => "unsupported_platform",
@@ -70,6 +79,7 @@ impl AppError {
         match self {
             Self::Forbidden => "error-forbidden",
             Self::InvalidInput => "error-invalid-input",
+            Self::UnsupportedOperation => "error-unsupported-operation",
             Self::InvalidCursor => "error-invalid-cursor",
             Self::ResponseTooLarge => "error-response-too-large",
             Self::AuthenticationRequired => "error-authentication-required",
@@ -77,6 +87,8 @@ impl AppError {
             Self::IncompatibleClient => "error-incompatible-client",
             Self::AuthenticationCancelled => "error-authentication-cancelled",
             Self::BrowserUnavailable => "error-browser-unavailable",
+            Self::SelectionUnavailable => "error-selection-unavailable",
+            Self::ConfigChanged => "error-config-changed",
             Self::AccountMismatch => "error-account-mismatch",
             Self::CredentialStore => "error-credential-store",
             Self::UnsupportedPlatform => "error-unsupported-platform",

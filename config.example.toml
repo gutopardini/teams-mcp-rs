@@ -1,6 +1,8 @@
 # Replace the fictional UUIDs and IDs with your account and allowed resources.
 # This file contains no tokens. Keep your real configuration outside Git.
 language = "en-US"
+# "graph" or "native_teams". Native mode currently supports chat reads only.
+backend = "graph"
 
 [identity]
 tenant_id = "00000000-0000-0000-0000-000000000001"

@@ -10,11 +10,21 @@ use crate::error::{AppError, Result};
 pub struct Config {
     #[serde(default = "default_language")]
     pub language: String,
+    #[serde(default)]
+    pub backend: Backend,
     pub identity: Identity,
     #[serde(default)]
     pub channels: Vec<Channel>,
     #[serde(default)]
     pub chats: Vec<Chat>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Backend {
+    #[default]
+    Graph,
+    NativeTeams,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -103,6 +113,14 @@ impl Config {
         if self.channels.is_empty() && self.chats.is_empty() && !bootstrap_chat {
             return Err(AppError::NoResources);
         }
+        if self.backend == Backend::NativeTeams {
+            return Ok(vec![
+                "openid",
+                "profile",
+                "offline_access",
+                "https://api.spaces.skype.com/.default",
+            ]);
+        }
         let mut scopes = vec![
             "openid",
             "offline_access",
@@ -177,6 +195,14 @@ mod tests {
             !bootstrap
                 .iter()
                 .any(|scope| scope.ends_with("/ChannelMessage.Read.All"))
+        );
+        config.backend = Backend::NativeTeams;
+        let scopes = config.scopes_for_login(true).unwrap();
+        assert!(scopes.contains(&"https://api.spaces.skype.com/.default"));
+        assert!(
+            !scopes
+                .iter()
+                .any(|scope| scope.contains("graph.microsoft.com"))
         );
     }
 

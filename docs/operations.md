@@ -2,27 +2,32 @@
 
 This guide describes the implemented read-only server. For setup prerequisites,
 the demo, and an example MCP client configuration, see the [README](../README.md).
-Live sign-in was attempted in the Linux pilot but was rejected by Microsoft;
-successful sign-in and real message reads remain unvalidated.
+In the Linux pilot, native sign-in and one selected chat read succeeded against
+one live tenant. Other accounts, tenants, and native channel reads remain
+unvalidated.
 
 ## Configuration and access
 
-- Supply a TOML file to `serve`, `login`, and `logout` with `--config`. The
+- Supply a TOML file to `serve`, `login`, `choose-chat`, and `logout` with `--config`. The
   [example configuration](../config.example.toml) uses fictional values. The
   file contains IDs and labels, not tokens; keep your own file private.
 - `tenant_id`, optional `client_id`, and `account_id` are UUIDs. The Teams Linux
   application ID is used when `client_id` is omitted; however, Microsoft rejected
   this first-party ID for the MCP's requested Graph permissions with `AADSTS65002`.
-  Set `client_id` to a registration authorized for those delegated permissions.
-  The account ID must be the user's object ID in the configured tenant. The account is verified
-  against Graph `/me` before a newly obtained refresh token is stored and before
-  a refreshed access token is used for message reads.
+  For Graph, set `client_id` to a registration authorized for those delegated
+  permissions. The account ID must be the user's object ID in the configured
+  tenant. Graph verifies the account against `/me`; native mode checks the ID
+  token returned directly by the Microsoft token endpoint over TLS, including
+  tenant, account, audience, issuer, and validity before storing or using tokens.
 - Each allowed channel is an exact team UUID and channel ID pair. Each allowed
-  chat has an exact chat ID. The server does not discover resources for you;
-  obtain their IDs through an authorized Teams or administrator workflow.
+  chat has an exact chat ID. `choose-chat --list` lists native chats in the
+  terminal without changing the allowlist; `choose-chat` prompts in the terminal
+  and adds one selected chat. MCP listing tools expose only allowlisted entries.
 - Remove the example entries and add only the intended resources. At least one
   channel or chat is required for normal sign-in; `--bootstrap-chat` permits
-  initial read-only chat authorization before choosing a chat. The configuration rejects unknown
+  sign-in before choosing a chat. Native Teams credentials can have privileges
+  beyond reading; the allowlist limits MCP operations rather than the grant.
+  The configuration rejects unknown
   fields, duplicate resources, invalid IDs, and files larger than 128 KiB.
 - `language` defaults to `en-US`. Only the English catalog is currently bundled;
   an unavailable valid locale falls back to English. CLI help and MCP tool
@@ -46,9 +51,9 @@ On Linux, `--webview-helper` can launch the existing Teams Linux authentication
 window with PKCE. Device-code fallback opens the system browser. It stores
 the refresh token in a dedicated Secret Service entry keyed by application,
 tenant, client, and account. The server lazily obtains an access token on the
-first authorized read, verifies the account through Graph, and caches the token
-in memory until its calculated expiry. Status and configured-resource listing
-do not check authentication or contact Graph.
+first authorized read, verifies the configured account, and caches the token in
+memory until its calculated expiry. Status and configured-resource listing do
+not check authentication or contact the service.
 
 **To remove access from this machine:**
 
@@ -69,10 +74,14 @@ may handle or retain data separately; their configuration is outside this server
 - The maximum requested message or reply page is 50; the default is 25. The
   Graph response body limit is 2 MiB and each message body is limited to 8,000
   Unicode characters. `text_truncated` flags a shortened message.
-- Channel message and context pages contain root posts only, as identified by
-  `coverage: channel_root_posts_only`. Use `teams_get_thread` to retrieve a
-  root and a page of replies. Chat pages use `coverage: chat_messages`.
-- `next_cursor` is valid only for the same Graph origin and resource. Supply the
+- Graph channel pages contain root posts only, as identified by
+  `coverage: channel_root_posts_only`. Use `teams_get_thread` for replies. Graph
+  chat pages use `coverage: chat_messages`. Native chat pages use
+  `coverage: native_chat_text_messages_only`; non-text events and unsupported
+  media types are omitted and attachment counts and unmarked deletion status
+  are unknown. Text with a native deletion marker is suppressed. Native channel
+  reads and channel threads are not implemented.
+- `next_cursor` is valid only for the same service origin and resource. Supply the
   same limit when following it. Invalid or modified destinations are rejected.
   `complete` on a message or thread page means that no next page was returned;
   check individual `text_truncated` flags and the coverage field separately.
@@ -99,11 +108,12 @@ or tokens for diagnosis.
 | --- | --- |
 | `forbidden` | The requested chat or channel is not in the loaded allowlist. Confirm the exact IDs and restart after authorized changes. |
 | `invalid_input` | An identifier, page size, search query, or cursor length is invalid. Check the tool schema and bounds. |
+| `unsupported_operation` | The selected backend does not implement this operation; native channel and thread reads are not yet available. |
 | `invalid_cursor` | The cursor is malformed or targets a different origin, resource, or thread. Use an unmodified cursor returned for the same target. |
 | `authentication_required` | No saved session was found. Run the explicit login command for this configuration. |
 | `authentication_failed` | Sign-in, token refresh, or Graph account verification failed. Check tenant policy and consent, then sign in again if needed. |
 | `incompatible_client` | Microsoft rejected the client ID for the requested permissions (`AADSTS65002`). Configure an authorized app registration and follow the tenant's consent process. |
-| `account_mismatch` | The signed-in account's Graph ID differs from `account_id`. Use the intended account and verify the configured object ID. |
+| `account_mismatch` | The signed-in identity does not match the configured account, tenant, or other identity checks. Use the intended account and verify the configuration. |
 | `credential_store_unavailable` | Secret Service or `secret-tool` could not be used. Check the Linux desktop keyring; tokens are not written to a plaintext fallback. |
 | `unsupported_platform` | This platform's credential-store adapter is not implemented. The fictional demo remains available. |
 | `upstream_error` | Graph returned an error. Inspect the numeric `upstream_status`: for example, `403` may indicate missing access or consent and `429` indicates throttling. The server does not automatically retry. |

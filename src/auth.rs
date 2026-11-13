@@ -1,4 +1,8 @@
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 #[cfg(target_os = "linux")]
 use std::process::Stdio;
@@ -16,7 +20,7 @@ use url::Url;
 use zeroize::Zeroizing;
 
 use crate::{
-    config::{Config, Identity},
+    config::{Backend, Config, Identity},
     error::{AppError, Result},
 };
 
@@ -200,6 +204,21 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: u64,
+    #[serde(default)]
+    id_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct NativeIdentityClaims {
+    aud: String,
+    iss: String,
+    tid: uuid::Uuid,
+    oid: uuid::Uuid,
+    exp: u64,
+    #[serde(default)]
+    nbf: Option<u64>,
+    #[serde(default)]
+    nonce: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -347,13 +366,19 @@ impl MicrosoftAuth {
                     AppError::InvalidResponse
                 })?;
                 let access = Zeroizing::new(token.access_token);
+                let id_token = token.id_token.map(Zeroizing::new);
                 let refresh = token.refresh_token.ok_or(AppError::AuthenticationFailed)?;
                 let refresh = Zeroizing::new(refresh);
                 if access.is_empty() || refresh.is_empty() || token.expires_in == 0 {
                     eprintln!("Authentication stage: device-token response validation.");
                     return Err(AppError::InvalidResponse);
                 }
-                self.verify_account(access.as_str()).await?;
+                self.verify_token_identity(
+                    access.as_str(),
+                    id_token.as_deref().map(String::as_str),
+                    None,
+                )
+                .await?;
                 self.store
                     .save(&self.config.identity, refresh.as_str())
                     .await?;
@@ -390,6 +415,11 @@ impl MicrosoftAuth {
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256")
             .append_pair("state", state.as_str());
+        if self.config.backend == Backend::NativeTeams {
+            authorize
+                .query_pairs_mut()
+                .append_pair("nonce", state.as_str());
+        }
         let reply = capture_webview(helper, authorize.as_str()).await?;
         let code = match reply {
             WebViewReply::Callback { url } => {
@@ -428,12 +458,19 @@ impl MicrosoftAuth {
             AppError::InvalidResponse
         })?;
         let access = Zeroizing::new(token.access_token);
+        let id_token = token.id_token.map(Zeroizing::new);
         let refresh = Zeroizing::new(token.refresh_token.ok_or(AppError::AuthenticationFailed)?);
         if access.is_empty() || refresh.is_empty() || token.expires_in == 0 {
             eprintln!("Authentication stage: browser-token response validation.");
             return Err(AppError::InvalidResponse);
         }
-        self.verify_account(access.as_str()).await?;
+        let nonce = (self.config.backend == Backend::NativeTeams).then_some(state.as_str());
+        self.verify_token_identity(
+            access.as_str(),
+            id_token.as_deref().map(String::as_str),
+            nonce,
+        )
+        .await?;
         self.store
             .save(&self.config.identity, refresh.as_str())
             .await?;
@@ -467,6 +504,76 @@ impl MicrosoftAuth {
         }
         Ok(())
     }
+
+    async fn verify_token_identity(
+        &self,
+        access_token: &str,
+        id_token: Option<&str>,
+        nonce: Option<&str>,
+    ) -> Result<()> {
+        match self.config.backend {
+            Backend::Graph => self.verify_account(access_token).await,
+            Backend::NativeTeams => verify_native_identity(
+                &self.config.identity,
+                id_token.ok_or(AppError::AuthenticationFailed)?,
+                nonce,
+            ),
+        }
+    }
+}
+
+/// The ID token is obtained directly from the configured Microsoft token endpoint
+/// over TLS, never from MCP input or a browser redirect. Check its account claims
+/// before saving or using the accompanying credentials.
+fn verify_native_identity(identity: &Identity, token: &str, nonce: Option<&str>) -> Result<()> {
+    if token.len() > MAX_AUTH_RESPONSE {
+        return Err(AppError::InvalidResponse);
+    }
+    let mut parts = token.split('.');
+    let (Some(header), Some(payload), Some(signature), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        eprintln!("Native identity stage: unsupported token structure.");
+        return Err(AppError::InvalidResponse);
+    };
+    if header.is_empty() || payload.is_empty() || signature.is_empty() {
+        return Err(AppError::InvalidResponse);
+    }
+    let payload = Zeroizing::new(URL_SAFE_NO_PAD.decode(payload).map_err(|_| {
+        eprintln!("Native identity stage: token payload encoding.");
+        AppError::InvalidResponse
+    })?);
+    let claims: NativeIdentityClaims = serde_json::from_slice(&payload).map_err(|_| {
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
+            let exists = |name| value.get(name).is_some();
+            eprintln!(
+                "Native identity stage: required fields present (aud={}, iss={}, tid={}, oid={}, exp={}).",
+                exists("aud"), exists("iss"), exists("tid"), exists("oid"), exists("exp")
+            );
+        } else {
+            eprintln!("Native identity stage: token payload format.");
+        }
+        AppError::InvalidResponse
+    })?;
+    let expected_issuer = format!(
+        "https://login.microsoftonline.com/{}/v2.0",
+        identity.tenant_id
+    );
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| AppError::AuthenticationFailed)?
+        .as_secs();
+    if claims.aud != identity.client_id.to_string()
+        || claims.iss != expected_issuer
+        || claims.tid != identity.tenant_id
+        || claims.oid != identity.account_id
+        || claims.exp <= now
+        || claims.nbf.is_some_and(|nbf| nbf > now.saturating_add(60))
+        || nonce.is_some_and(|nonce| claims.nonce.as_deref() != Some(nonce))
+    {
+        return Err(AppError::AccountMismatch);
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -575,9 +682,16 @@ fn safe_verification(uri: &str, code: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
-#[async_trait]
-impl TokenProvider for MicrosoftAuth {
-    async fn access_token(&self) -> Result<Zeroizing<String>> {
+impl MicrosoftAuth {
+    /// Used only by the explicit local setup command before choosing a chat.
+    pub async fn setup_access_token(&self) -> Result<Zeroizing<String>> {
+        if self.config.backend != Backend::NativeTeams {
+            return Err(AppError::InvalidConfig);
+        }
+        self.access_token_for(true).await
+    }
+
+    async fn access_token_for(&self, bootstrap_chat: bool) -> Result<Zeroizing<String>> {
         let mut cached = self.cached.lock().await;
         if let Some(token) = cached
             .as_ref()
@@ -587,7 +701,7 @@ impl TokenProvider for MicrosoftAuth {
         }
         let refresh = self.store.load(&self.config.identity).await?;
         let client_id = self.config.identity.client_id.to_string();
-        let scope = self.config.scopes()?.join(" ");
+        let scope = self.config.scopes_for_login(bootstrap_chat)?.join(" ");
         let response = self
             .client
             .post(self.endpoint("token")?)
@@ -607,10 +721,16 @@ impl TokenProvider for MicrosoftAuth {
         let token: TokenResponse =
             serde_json::from_slice(&data).map_err(|_| AppError::InvalidResponse)?;
         let value = Zeroizing::new(token.access_token);
+        let id_token = token.id_token.map(Zeroizing::new);
         if value.is_empty() || token.expires_in == 0 {
             return Err(AppError::InvalidResponse);
         }
-        self.verify_account(value.as_str()).await?;
+        self.verify_token_identity(
+            value.as_str(),
+            id_token.as_deref().map(String::as_str),
+            None,
+        )
+        .await?;
         if let Some(refresh) = token.refresh_token {
             let refresh = Zeroizing::new(refresh);
             if refresh.is_empty() {
@@ -626,6 +746,13 @@ impl TokenProvider for MicrosoftAuth {
             expires_at: Instant::now() + Duration::from_secs(duration),
         });
         Ok(value)
+    }
+}
+
+#[async_trait]
+impl TokenProvider for MicrosoftAuth {
+    async fn access_token(&self) -> Result<Zeroizing<String>> {
+        self.access_token_for(false).await
     }
 }
 
@@ -790,6 +917,37 @@ mod tests {
         assert!(matches!(denied.app_error(), AppError::IncompatibleClient));
         let other: TokenError = serde_json::from_value(json!({"error": "access_denied"})).unwrap();
         assert!(matches!(other.app_error(), AppError::AuthenticationFailed));
+    }
+
+    #[test]
+    fn native_identity_is_bound_to_account_tenant_audience_and_nonce() {
+        let identity = demo_config().identity;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut claims = json!({
+            "aud": identity.client_id.to_string(),
+            "iss": format!("https://login.microsoftonline.com/{}/v2.0", identity.tenant_id),
+            "tid": identity.tenant_id.to_string(), "oid": identity.account_id.to_string(),
+            "exp": now + 3600, "nbf": now - 1, "nonce": "expected"
+        });
+        let token = |claims: &serde_json::Value| {
+            format!(
+                "header.{}.signature",
+                URL_SAFE_NO_PAD.encode(claims.to_string())
+            )
+        };
+        assert!(verify_native_identity(&identity, &token(&claims), Some("expected")).is_ok());
+        assert!(verify_native_identity(&identity, &token(&claims), Some("wrong")).is_err());
+        claims["oid"] = json!("00000000-0000-0000-0000-000000000099");
+        assert!(matches!(
+            verify_native_identity(&identity, &token(&claims), None),
+            Err(AppError::AccountMismatch)
+        ));
+        claims["oid"] = json!(identity.account_id.to_string());
+        claims["exp"] = json!(now - 1);
+        assert!(verify_native_identity(&identity, &token(&claims), None).is_err());
     }
 
     #[cfg(target_os = "linux")]
