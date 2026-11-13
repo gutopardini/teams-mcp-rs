@@ -1,0 +1,32 @@
+[package]
+name = "teams-mcp-rs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A local, read-only-first Teams MCP server"
+
+[[bin]]
+name = "teams-mcp"
+path = "src/main.rs"
+
+[dependencies]
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+fluent-bundle = "0.16"
+html2text = "0.17"
+percent-encoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rmcp = { version = "3.10", default-features = false, features = ["macros", "server", "transport-io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+toml = "0.8"
+unic-langid = "0.9"
+url = "2"
+uuid = { version = "1", features = ["serde"] }
+zeroize = "1"
+
+[dev-dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["net", "test-util"] }

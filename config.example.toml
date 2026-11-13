@@ -1,0 +1,17 @@
+# Replace the fictional UUIDs and IDs with your own app and allowed resources.
+# This file contains no tokens. Keep your real configuration outside Git.
+language = "en-US"
+
+[identity]
+tenant_id = "00000000-0000-0000-0000-000000000001"
+client_id = "00000000-0000-0000-0000-000000000002"
+account_id = "00000000-0000-0000-0000-000000000004"
+
+[[channels]]
+team_id = "00000000-0000-0000-0000-000000000003"
+channel_id = "19:fictional-channel@thread.tacv2"
+label = "Example incidents channel"
+
+[[chats]]
+chat_id = "19:fictional-chat@thread.v2"
+label = "Example chat"

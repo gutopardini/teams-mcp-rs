@@ -2,7 +2,9 @@
 
 Date: November 13, 2026
 
-Status: proposal for discussion; no functionality has been implemented yet.
+Status: the first read-only Graph adapter, local demo, and MCP server have been
+implemented and tested against fictional local services. Live tenant integration,
+the native Teams adapter, monitoring, drafts, approval, and sending are pending.
 
 ## 1. Vision
 
