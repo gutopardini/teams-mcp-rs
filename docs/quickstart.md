@@ -58,10 +58,11 @@ chmod 600 "$MCP_CONFIG"
 
 The built-in Teams application ID is used when `client_id` is omitted. Native
 mode requests the Teams `/.default` resource plus OpenID identity scopes. The
-native credential can permit actions beyond reading, including sending; the MCP
-currently exposes only reading tools. Use this integration only where authorized
-by the account owner and the tenant's policies. The server's allowlist does not
-reduce the privileges of the underlying Microsoft credential.
+native credential can permit actions beyond these tools, including sending.
+The server reads text and inline images, and posts only in assisted mode after
+confirmation. Use this integration only where authorized by the account owner
+and the tenant's policies. The server's allowlist does not reduce the
+privileges of the underlying Microsoft credential.
 
 ## 3. Sign in and choose a chat
 
@@ -119,16 +120,18 @@ changes. Start a new Codex session to load the configured server. In the Codex
 terminal UI, `/mcp` shows the active servers. You can then ask, for example:
 
 > Use the Teams MCP to find the open chat I name and summarize its latest
-> messages. Cite the source messages when available. Reading does not require
-> the chat to be on the allowlist.
+> messages, including screenshots. Cite the source messages when available.
+> Reading does not require the chat to be on the allowlist.
 
 The MCP listing tools show only the local allowlist, not the entire directory.
-The local MCP can pass selected message content to its AI client; whether that
-client or its provider retains data depends on their own configuration and
-policies. Native mode reads text and inline images from chats. Channels, native
-thread replies, message sending, drafts, approval, and automation are not
-implemented. Attachment counts and unmarked deletion status can be unknown.
-Image blocks are capped at four per response.
+The local MCP can pass selected message content, including image bytes, to its
+AI client; whether that client or its provider retains data depends on their
+own configuration and policies. Native mode reads text and inline images from
+chats. Channels, native thread replies, drafts, approval, and automation are
+not implemented. Assisted mode can post a plain-text chat message after
+confirmation. Attachment counts and unmarked deletion status can be unknown.
+Image blocks are capped at four per response. The field contract is
+[images.md](images.md).
 
 The server reads its configuration once when it starts. After authorizing or
 removing a chat, restart the relevant MCP server process or Codex session so

@@ -229,9 +229,10 @@ responses distinguish observed data, summaries, and inferred decisions; inferred
 decisions require evidence and may be uncertain.
 
 Listing and history reads must not mark messages as read as a side effect.
-Attachments, images, external links, and structured cards initially appear as
-metadata or as unprocessed content. File access and opening URLs require their
-own policy and are outside the MVP.
+External links, non-image files, and structured cards stay unopened. Inline
+images are the exception that shipped: a read returns at most four pictures
+as MCP image blocks, under the host and size rules in
+[docs/images.md](docs/images.md). Opening arbitrary URLs remains out of scope.
 
 ## 5. Preview, approval, and sending
 

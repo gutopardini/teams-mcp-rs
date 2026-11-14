@@ -5,8 +5,9 @@ adapter. Microsoft rejected the built-in, first-party Teams application ID for
 the MCP's requested Graph permissions with `AADSTS65002` during the Linux pilot.
 The native Teams sign-in and one selected chat read succeeded in that pilot.
 The desktop client also uses native Teams credentials to send messages. The
-user approved using a similarly privileged credential while the MCP exposes
-read-only operations; the credential itself is not restricted to reading.
+user approved using a similarly privileged credential while the first increment
+exposed read-only operations. Inline image reads and assisted sends came later.
+The credential itself is not restricted to reading.
 Tenant policies and permission to use the integration still apply.
 
 The implementation is informed by the existing project's discoveries:
@@ -24,9 +25,11 @@ The implementation is informed by the existing project's discoveries:
   source identity and timestamps, bound content, and indicate incomplete pages.
 - **Events:** retain the original project's reconnection and reconciliation
   findings for the planned monitor; no real-time transport is exposed yet.
-- **Transport limitations:** native mode supports text and inline-image chat reads; it
-  does not implement channels, channel replies, or sending. A single live chat
-  read does not establish completeness or behavior across tenants.
+- **Transport limitations:** native mode supports text and inline-image chat
+  reads, and assisted plain-text sends after confirmation. Image host checks
+  are in [images.md](images.md). It does not implement channels or channel
+  replies. A single live chat read does not establish completeness or
+  behavior across tenants.
 
 No source code was copied from `teams-linux-rs` or Better Teams for this
 increment. The public application ID was embedded with the user's explicit

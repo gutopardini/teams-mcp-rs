@@ -28,8 +28,9 @@ not implemented or validated.
 
 1. The server loads and validates configuration. Its MCP list tools expose only
    entries in that loaded allowlist; they do not discover resources remotely.
-2. A message, context, thread, or search request is checked against the exact
-   configured chat or channel before the backend can obtain an access token.
+2. A message, context, thread, or search request checks the identifier shape
+   and page size before the backend obtains an access token. Reads do not
+   consult the allowlist. Replies and watches do.
 3. If needed, the authentication provider loads this application's refresh token.
    Graph verifies the account through `GET /v1.0/me`; native mode checks the ID
    token obtained directly over TLS from Microsoft's token endpoint. Native ID
@@ -41,9 +42,16 @@ not implemented or validated.
 5. Graph content is normalized with original identity, timestamps, available
    source links, truncation indicators, and untrusted-content markers. HTML is
    converted to text. Inline Teams images and Graph hosted images are fetched
-   under the host checks in [operations.md](operations.md). Other links and
-   files are not opened. Search compares
-   locally fetched message text and does not issue a tenant-wide search query.
+   under the host checks in [images.md](images.md). Other links and files are
+   not opened. Search compares locally fetched message text and does not issue
+   a tenant-wide search query.
+6. After the text page is normalized, `load_images` downloads at most four
+   pictures for that page. Native mode sends the media token only to a
+   validated `*.asm.skype.com` or `*.asyncgw.teams.microsoft.com` object URL.
+   Graph mode ignores the host written in the `<img>` tag and requests
+   `/hostedContents/{id}/$value` on the configured Graph host. The MCP layer
+   then keeps at most four image blocks for the whole tool result and marks
+   the rest `response_budget`. Reply evidence checks skip this download.
 
 The Graph adapter reads `/chats/{id}/messages` or
 `/teams/{team}/channels/{channel}/messages`, with separate root and reply
@@ -87,6 +95,12 @@ This confirms only that selected account and chat; it does not establish message
 completeness or support for other tenants.
 
 The current local checks include native-service fixture tests, URL and cursor
-restriction checks, 23 unit tests, an MCP stdio integration test, Clippy with
-warnings denied, and a release build. Local fixtures do not contact Microsoft or
-send messages.
+restriction checks, image host rejection, a loopback download of a PNG
+signature with the media token, a Graph hosted-content fetch that refuses the
+host written in the HTML, an MCP stdio integration test, and a release build.
+On November 14, 2026, `cargo test --locked --offline` passed 37 library tests,
+2 binary tests, and the MCP stdio test. `cargo build --release --locked --offline`
+completed. `cargo fmt` and Clippy were not installed in that environment, so
+formatting and lint were not re-run. Local fixtures do not contact Microsoft
+or send messages. A live native read in the signed-in tenant showed the image
+blocks; that check was one account and is not a completeness claim.

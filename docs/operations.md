@@ -72,8 +72,8 @@ not check authentication or contact the service.
 3. If you need to revoke Microsoft-side grants or tokens, use the appropriate
    Microsoft account or administrator controls. Local logout does not revoke them.
 
-The server does not intentionally persist conversation bodies to disk or print
-them in logs. The MCP client, AI provider, operating system, or other software
+The server does not intentionally persist conversation bodies or image bytes
+to disk, or print them in logs. The MCP client, AI provider, operating system, or other software
 may handle or retain data separately; their configuration is outside this server.
 
 ## Reading and search limits
@@ -89,14 +89,13 @@ may handle or retain data separately; their configuration is outside this server
   stay omitted. Native attachment counts and unmarked deletion status are
   unknown. Text with a native deletion marker is suppressed, including its
   images. Native channel reads and channel threads are not implemented.
-- A read returns at most four images, each at most 1.5 MiB, as MCP image
-  content blocks tied to the message id and image index. Native bytes are
-  fetched only from `https://*.asm.skype.com/v1/objects/{id}/views/imgo` or
-  `https://*.asyncgw.teams.microsoft.com` with the Teams media token. Graph
-  bytes are fetched only from the Graph hosted-content path built for that
-  message. Redirects are not followed. An image that cannot be fetched stays
-  in `images` with `attached: false` and an `omitted` reason; the page still
-  succeeds. Other links and non-image files are not opened.
+- Image reads follow [images.md](images.md). A tool result attaches at most
+  four pictures, each at most 1.5 MiB, as MCP image blocks. Native bytes come
+  only from Teams media hosts. Graph bytes come only from the hosted-content
+  URL this server builds. Redirects are not followed. A picture that cannot
+  be fetched stays in `images` with `attached: false` and an `omitted` reason
+  (`unavailable`, `too_large`, `unsupported_type`, or `response_budget`); the
+  page still succeeds. Other links and non-image files are not opened.
 - `next_cursor` is valid only for the same service origin and resource. Supply the
   same limit when following it. Invalid or modified destinations are rejected.
   `complete` on a message or thread page means that no next page was returned;

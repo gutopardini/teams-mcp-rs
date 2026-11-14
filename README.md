@@ -23,6 +23,7 @@ builds, with fictional data and no network.
 | Read what one person said | `teams_find_messages` returns that person's messages only when the name matches one author. |
 | Reply | `teams_propose_reply` shows the destination, the exact text, and quotes from real messages. The post happens only when the MCP client collects the word `send`. |
 | Watch a code-review chat | `teams_poll_watch` records a baseline first and later returns only newer messages. It never sends. |
+| See a picture posted in the chat | The read tools return up to four images as MCP image blocks, tied to the message id. The contract is in [docs/images.md](docs/images.md). |
 
 Reads use the signed-in account and do not require an allowlist. The allowlist
 limits replies and watches. Message text is marked untrusted: the model must
@@ -34,8 +35,8 @@ application ID was rejected by Microsoft (`AADSTS65002`). Windows, macOS, other
 tenants, channel reads on the native backend, and unattended sending are not
 validated.
 
-Details live in [the AI-chat guide](docs/ai-chat.md), [the plan](PLAN.md), and
-the [operations guide](docs/operations.md).
+Details live in [the AI-chat guide](docs/ai-chat.md), [the image contract](docs/images.md),
+[the plan](PLAN.md), and the [operations guide](docs/operations.md).
 
 ## Where this should go
 
@@ -144,25 +145,30 @@ process can still hold an access token in memory.
 | --- | --- |
 | `teams_status` | Backend, account, resource counts, and whether replies need confirmation. It does not check that sign-in still works. |
 | `teams_list_teams`, `teams_list_channels`, `teams_list_chats` | The allowlist only. They do not query Teams. |
-| `teams_get_messages`, `teams_get_context` | One bounded page from a chat or, on Graph, a channel. The allowlist is not required. |
-| `teams_search_messages` | Local text search over at most three fetched pages of one chat or channel. |
-| `teams_get_thread` | A channel post and a bounded page of replies. |
+| `teams_get_messages`, `teams_get_context` | One bounded page from a chat or, on Graph, a channel. The allowlist is not required. Inline images are image content blocks. |
+| `teams_search_messages` | Local text search over at most three fetched pages of one chat or channel. Hits can include the same image blocks. |
+| `teams_get_thread` | A channel post and a bounded page of replies. Images on the root and the replies share one four-image cap. |
 | `teams_resolve_target` | One allowlisted label or exact ID. Otherwise, candidates and no selection. |
 | `teams_search_open_chats` | Title filter of chats already open in Teams. Several matches, or an incomplete list, means no selection. |
-| `teams_find_messages` | One author's messages. Several matching names return no message text. |
-| `teams_poll_watch` | A configured code-review watch. The first call only stores a baseline. |
+| `teams_find_messages` | One author's messages. Several matching names return no message text. Pictures on the returned messages are included. |
+| `teams_poll_watch` | A configured code-review watch. The first call only stores a baseline. Newer messages can include pictures. |
 | `teams_propose_reply` | Preview a reply. Post it only after the client collects `send`. |
 
 Pages hold at most 50 messages. Cursors are accepted only for the same service
-and the same resource. Attachments are not opened. Native results are text
-messages in a chat. The server does not mark anything as read.
+and the same resource. A read attaches at most four images, each at most
+1.5 MiB, from Teams media hosts or from Graph hosted content. Other links and
+non-image files are not opened. Native results are text and inline images in
+a chat. The server does not mark anything as read. The field-by-field contract
+is [docs/images.md](docs/images.md).
 
 ## Security
 
 The allowlist is checked before a token is used to send. A read of a
 well-formed chat or channel id uses the signed-in account and does not consult
 the allowlist. Pagination URLs must stay on the expected origin and path.
-Redirects are not followed.
+Redirects are not followed. An image URL is requested only after the host and
+path checks in [docs/images.md](docs/images.md); the token for that request is
+not sent to the address written in the message HTML.
 Responses and message text are size-limited. The signed-in account must match
 the config.
 
