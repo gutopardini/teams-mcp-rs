@@ -3,6 +3,10 @@
 language = "en-US"
 # "graph" or "native_teams". Native mode currently supports chat reads only.
 backend = "graph"
+# "read_only" or "assisted". Assisted can post a reply only after the MCP
+# client shows the preview and the user types send. Restart the server after
+# changing this. Graph assisted mode also requests send scopes at login.
+interaction = "read_only"
 
 [identity]
 tenant_id = "00000000-0000-0000-0000-000000000001"
@@ -19,3 +23,10 @@ label = "Example incidents channel"
 [[chats]]
 chat_id = "19:fictional-chat@thread.v2"
 label = "Example chat"
+
+# A watch lets a loop poll one allowlisted chat for new code-review requests.
+# The chat_id must also appear in [[chats]]. Polling never sends a reply.
+# [[watches]]
+# chat_id = "19:fictional-chat@thread.v2"
+# label = "Example review"
+# purpose = "code_review"

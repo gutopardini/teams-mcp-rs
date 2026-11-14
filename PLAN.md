@@ -2,10 +2,12 @@
 
 Date: November 13, 2026
 
-Status: read-only Graph and native Teams chat adapters, a local demo, and the MCP
-server are implemented. Native sign-in and one selected chat read passed in a
-Linux live-tenant pilot. Broader validation, monitoring, drafts, approval, and
-sending are pending.
+Status: read-only Graph and native Teams chat adapters, label resolution, author
+lookup, assisted reply confirmation, code-review watch polling, a local demo,
+and the MCP server are implemented. Native sign-in and one selected chat read
+passed in a Linux live-tenant pilot. A reply is posted only after the MCP client
+collects an explicit confirmation; clients that cannot ask leave it unsent.
+Live sends, unattended workers, and automatic publishing remain unvalidated.
 
 ## 1. Vision
 

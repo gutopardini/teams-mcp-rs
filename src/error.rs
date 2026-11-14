@@ -44,6 +44,12 @@ pub enum AppError {
     InvalidConfig,
     #[error("No read resources have been configured")]
     NoResources,
+    #[error("Assisted replies are disabled in read-only mode")]
+    InteractionReadOnly,
+    #[error("The cited evidence does not match the fetched messages")]
+    EvidenceRejected,
+    #[error("The send result is unknown and was not retried")]
+    OutcomeUnknown,
     #[error("The MCP transport failed")]
     Protocol,
 }
@@ -71,6 +77,9 @@ impl AppError {
             Self::InvalidResponse => "invalid_response",
             Self::InvalidConfig => "invalid_config",
             Self::NoResources => "no_resources",
+            Self::InteractionReadOnly => "interaction_read_only",
+            Self::EvidenceRejected => "evidence_rejected",
+            Self::OutcomeUnknown => "outcome_unknown",
             Self::Protocol => "protocol_error",
         }
     }
@@ -97,6 +106,9 @@ impl AppError {
             Self::InvalidResponse => "error-invalid-response",
             Self::InvalidConfig => "error-invalid-config",
             Self::NoResources => "error-no-resources",
+            Self::InteractionReadOnly => "error-interaction-read-only",
+            Self::EvidenceRejected => "error-evidence-rejected",
+            Self::OutcomeUnknown => "error-outcome-unknown",
             Self::Protocol => "error-protocol",
         }
     }

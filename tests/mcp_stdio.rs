@@ -63,7 +63,7 @@ impl TestClient {
 }
 
 #[tokio::test]
-async fn demo_server_exposes_only_read_tools_and_enforces_the_allowlist() {
+async fn demo_server_lists_chat_tools_and_enforces_the_allowlist() {
     let mut client = TestClient::start().await;
     let init = client
         .call(
@@ -86,7 +86,7 @@ async fn demo_server_exposes_only_read_tools_and_enforces_the_allowlist() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 8);
+    assert_eq!(names.len(), 13);
     for name in [
         "teams_status",
         "teams_list_teams",
@@ -96,6 +96,11 @@ async fn demo_server_exposes_only_read_tools_and_enforces_the_allowlist() {
         "teams_get_context",
         "teams_search_messages",
         "teams_get_thread",
+        "teams_resolve_target",
+        "teams_search_open_chats",
+        "teams_find_messages",
+        "teams_poll_watch",
+        "teams_propose_reply",
     ] {
         assert!(names.contains(&name), "missing {name}");
     }
@@ -104,11 +109,14 @@ async fn demo_server_exposes_only_read_tools_and_enforces_the_allowlist() {
             || name.contains("approve")
             || name.contains("delete"))
     );
-    assert!(
-        tools
-            .iter()
-            .all(|tool| tool["annotations"]["readOnlyHint"] == true)
-    );
+    assert!(tools.iter().all(|tool| {
+        let read_only = tool["annotations"]["readOnlyHint"] == true;
+        if tool["name"] == "teams_propose_reply" {
+            !read_only
+        } else {
+            read_only
+        }
+    }));
 
     let status = client
         .call(
@@ -203,6 +211,94 @@ async fn demo_server_exposes_only_read_tools_and_enforces_the_allowlist() {
     assert_eq!(
         search["result"]["structuredContent"]["data"]["complete"],
         true
+    );
+
+    let resolved = client
+        .call(
+            9,
+            "tools/call",
+            json!({
+                "name": "teams_resolve_target",
+                "arguments": {"query": "Example chat"}
+            }),
+        )
+        .await;
+    assert_eq!(
+        resolved["result"]["structuredContent"]["data"]["status"],
+        "resolved"
+    );
+    let ambiguous = client
+        .call(
+            10,
+            "tools/call",
+            json!({
+                "name": "teams_resolve_target",
+                "arguments": {"query": "example"}
+            }),
+        )
+        .await;
+    assert_eq!(
+        ambiguous["result"]["structuredContent"]["data"]["status"],
+        "needs_confirmation"
+    );
+    assert!(ambiguous["result"]["structuredContent"]["data"]["selected"].is_null());
+    let open = client
+        .call(
+            12,
+            "tools/call",
+            json!({
+                "name": "teams_search_open_chats",
+                "arguments": {"query": "josé"}
+            }),
+        )
+        .await;
+    assert_eq!(
+        open["result"]["structuredContent"]["data"]["status"],
+        "resolved"
+    );
+    assert_eq!(
+        open["result"]["structuredContent"]["data"]["candidates"][0]["label"],
+        "Allan and José"
+    );
+    assert_eq!(
+        open["result"]["structuredContent"]["data"]["candidates"][0]["authorized"],
+        false
+    );
+    let several = client
+        .call(
+            13,
+            "tools/call",
+            json!({
+                "name": "teams_search_open_chats",
+                "arguments": {"query": "a"}
+            }),
+        )
+        .await;
+    assert_eq!(
+        several["result"]["structuredContent"]["data"]["status"],
+        "needs_confirmation"
+    );
+    assert!(several["result"]["structuredContent"]["data"]["selected"].is_null());
+    let proposal = client
+        .call(
+            11,
+            "tools/call",
+            json!({
+                "name": "teams_propose_reply",
+                "arguments": {
+                    "target": allowed,
+                    "text": "A fictional reply that must not be sent.",
+                    "evidence": [{"message_id": "demo-message-1", "excerpt": "fictional incident"}]
+                }
+            }),
+        )
+        .await;
+    assert_eq!(proposal["result"]["isError"], true);
+    assert!(
+        proposal["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("interaction_read_only")
     );
 
     client.child.kill().await.unwrap();

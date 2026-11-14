@@ -132,6 +132,9 @@ or tokens for diagnosis.
 | `invalid_response` | The service returned data in an unsupported or inconsistent form. The server does not guess missing data. |
 | `invalid_config` | The file is missing, invalid, or outside the configuration rules. Compare it with the example. |
 | `no_resources` | Sign-in was requested with no allowed channels or chats. Configure at least one intended resource. |
+| `interaction_read_only` | A reply was requested while `interaction` is `read_only`. Set `assisted` and restart the server. |
+| `evidence_rejected` | A cited message was not in the fetched pages, or the excerpt is not contained in that message. |
+| `outcome_unknown` | A confirmed send did not return a definitive result. Check Teams before trying again. The server does not retry it. |
 | `protocol_error` | The MCP stdio transport failed. Check the client launch command and keep stdout reserved for MCP traffic. |
 
 An access token can also be revoked before its cached expiration. If a running

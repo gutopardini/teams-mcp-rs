@@ -2,8 +2,8 @@ use async_trait::async_trait;
 
 use crate::{
     backend::{
-        Author, Message, MessagePage, MessageSource, Target, ThreadPage, message_coverage,
-        untrusted_notice,
+        Author, Message, MessagePage, MessageSource, OpenChatMatch, OpenChatPage, Target,
+        ThreadPage, message_coverage, title_matches_query, untrusted_notice,
     },
     config::Config,
     error::{AppError, Result},
@@ -89,6 +89,24 @@ impl MessageSource for DemoSource {
             next_cursor: None,
             complete: true,
             notice: untrusted_notice(),
+        })
+    }
+
+    async fn search_open_chats(&self, query: &str) -> Result<OpenChatPage> {
+        let chats = [
+            ("19:fictional-chat@thread.v2", "Example chat"),
+            ("19:allan-and-jose@thread.v2", "Allan and José"),
+        ];
+        Ok(OpenChatPage {
+            matches: chats
+                .into_iter()
+                .filter(|(_, title)| title_matches_query(title, query))
+                .map(|(chat_id, label)| OpenChatMatch {
+                    chat_id: chat_id.into(),
+                    label: label.into(),
+                })
+                .collect(),
+            complete: true,
         })
     }
 }

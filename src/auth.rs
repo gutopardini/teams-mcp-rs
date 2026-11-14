@@ -280,6 +280,10 @@ fn default_interval() -> u64 {
 }
 
 impl MicrosoftAuth {
+    pub fn account_id(&self) -> uuid::Uuid {
+        self.config.identity.account_id
+    }
+
     pub fn new(config: Config, store: Arc<dyn SecretStore>) -> Result<Self> {
         Ok(Self {
             config,

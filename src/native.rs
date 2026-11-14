@@ -1,4 +1,5 @@
-//! Read-only adapter for Teams native-service contracts.
+//! Native Teams adapter. Reads are available in every mode. Plain-text sends
+//! exist only for the assisted confirmation flow.
 
 use std::{sync::Arc, time::Duration};
 
@@ -12,7 +13,10 @@ use zeroize::Zeroizing;
 
 use crate::{
     auth::{MicrosoftAuth, TokenProvider, bounded_body, http_client},
-    backend::{Author, Message, MessagePage, MessageSource, Target, ThreadPage, untrusted_notice},
+    backend::{
+        Author, Message, MessagePage, MessageSource, OpenChatMatch, OpenChatPage, SendReceipt,
+        Target, ThreadPage, title_matches_query, untrusted_notice,
+    },
     config::valid_id,
     error::{AppError, Result},
 };
@@ -43,11 +47,13 @@ struct NativeSession {
     token: Zeroizing<String>,
     chat_base: Url,
     aggregator_base: Option<Url>,
+    middle_tier: Option<Url>,
     expires_at: Instant,
 }
 
 pub struct NativeSource {
     auth: Arc<dyn NativeTokenProvider>,
+    account_id: String,
     client: Client,
     authz: Url,
     directory: Url,
@@ -74,11 +80,20 @@ struct ExchangeRegions {
     chat_service: String,
     #[serde(default)]
     chat_service_aggregator: Option<String>,
+    #[serde(default)]
+    middle_tier: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct DirectoryResponse {
     conversations: Vec<DirectoryEntry>,
+    #[serde(default, rename = "_metadata")]
+    metadata: Option<DirectoryMetadata>,
+}
+#[derive(Deserialize)]
+struct DirectoryMetadata {
+    #[serde(rename = "backwardLink")]
+    backward_link: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -137,7 +152,8 @@ struct NativeMessage {
 impl NativeSource {
     pub fn new(auth: Arc<MicrosoftAuth>) -> Result<Self> {
         Ok(Self {
-            auth,
+            auth: auth.clone(),
+            account_id: auth.account_id().to_string(),
             client: http_client()?,
             authz: Url::parse(AUTHZ).expect("valid fixed Teams auth URL"),
             directory: Url::parse(DIRECTORY).expect("valid fixed Teams directory URL"),
@@ -189,6 +205,12 @@ impl NativeSource {
             .as_deref()
             .map(|base| self.parse_service_base(base))
             .transpose()?;
+        let middle_tier = data
+            .region_gtms
+            .middle_tier
+            .as_deref()
+            .map(|base| self.parse_profile_base(base))
+            .transpose()?;
         let expiry = data
             .tokens
             .expires_in
@@ -199,6 +221,7 @@ impl NativeSource {
             token: Zeroizing::new(data.tokens.skype_token),
             chat_base,
             aggregator_base,
+            middle_tier,
             expires_at: Instant::now() + Duration::from_secs(expiry),
         };
         *cached = Some(session.clone());
@@ -221,15 +244,34 @@ impl NativeSource {
         Ok(chat_base)
     }
 
-    pub async fn discover_chats(&self) -> Result<Vec<ChatCandidate>> {
-        let session = self.session(true).await?;
-        let mut url = self.directory.clone();
-        url.query_pairs_mut()
+    fn parse_profile_base(&self, value: &str) -> Result<Url> {
+        let base = Url::parse(value).map_err(|_| AppError::InvalidResponse)?;
+        let valid = safe_profile_base(&base);
+        #[cfg(test)]
+        let valid = valid
+            || self
+                .fixture_origin
+                .as_ref()
+                .is_some_and(|origin| base.origin() == origin.origin());
+        if !valid {
+            eprintln!("Native Teams stage: unrecognized profile service URL.");
+            return Err(AppError::InvalidResponse);
+        }
+        Ok(base)
+    }
+
+    async fn first_directory(
+        &self,
+        session: &NativeSession,
+    ) -> Result<(DirectoryResponse, Url)> {
+        let mut endpoint = self.directory.clone();
+        endpoint
+            .query_pairs_mut()
             .append_pair("view", "mychats")
             .append_pair("pageSize", "100");
         let mut response = self
             .client
-            .get(url)
+            .get(endpoint.clone())
             .bearer_auth(session.token.as_str())
             .header("x-ms-client-version", "1416/1.0.0.2024050301")
             .send()
@@ -240,13 +282,13 @@ impl NativeSource {
         // header or regional service is required for this tenant.
         if retry_directory(response.status()) {
             if let Some(base) = &session.aggregator_base {
-                let url = directory_url(base, &["api", "v2", "users", "ME", "conversations"])?;
-                response = self.chat_directory_request(url, &session).await?;
+                endpoint = directory_url(base, &["api", "v2", "users", "ME", "conversations"])?;
+                response = self.chat_directory_request(endpoint.clone(), session).await?;
             }
             if retry_directory(response.status()) {
-                let url =
+                endpoint =
                     directory_url(&session.chat_base, &["v1", "users", "ME", "conversations"])?;
-                response = self.chat_directory_request(url, &session).await?;
+                response = self.chat_directory_request(endpoint.clone(), session).await?;
             }
         }
         if !response.status().is_success() {
@@ -256,11 +298,13 @@ impl NativeSource {
             );
             return Err(AppError::Upstream(response.status().as_u16()));
         }
-        let body = bounded_body(response, MAX_RESPONSE).await?;
-        let directory: DirectoryResponse = serde_json::from_slice(&body).map_err(|_| {
-            eprintln!("Native Teams stage: chat directory response format.");
-            AppError::InvalidResponse
-        })?;
+        endpoint.set_query(None);
+        Ok((read_directory(response).await?, endpoint))
+    }
+
+    pub async fn discover_chats(&self) -> Result<Vec<ChatCandidate>> {
+        let session = self.session(true).await?;
+        let (directory, _) = self.first_directory(&session).await?;
         Ok(directory
             .conversations
             .into_iter()
@@ -297,6 +341,128 @@ impl NativeSource {
             })
             .take(100)
             .collect())
+    }
+
+    async fn find_open_chats(&self, query: &str) -> Result<OpenChatPage> {
+        let session = self.session(false).await?;
+        let (first, endpoint) = self.first_directory(&session).await?;
+        let mut backward = next_directory_link(&first);
+        let mut entries = first.conversations;
+        let mut pages = 1;
+        let mut complete = backward.is_none();
+        while let Some(cursor) = backward.take() {
+            if pages == 3 {
+                complete = false;
+                break;
+            }
+            let Ok(next) = cursor_url(&endpoint, &cursor) else {
+                complete = false;
+                break;
+            };
+            let response = self.chat_directory_request(next, &session).await?;
+            if !response.status().is_success() {
+                return Err(AppError::Upstream(response.status().as_u16()));
+            }
+            let page = read_directory(response).await?;
+            backward = next_directory_link(&page);
+            entries.extend(page.conversations);
+            pages += 1;
+            complete = backward.is_none();
+        }
+        let mut peers = Vec::new();
+        let mut rows = Vec::new();
+        for entry in entries {
+            let Some(id) = entry.id.filter(|id| {
+                valid_id(id) && id.starts_with("19:") && !id.contains("@thread.tacv2")
+            }) else {
+                continue;
+            };
+            if direct_peer_oid(&id, &self.account_id).is_some() {
+                if let Some(peer) = direct_peer_oid(&id, &self.account_id) {
+                    peers.push(peer);
+                }
+                rows.push((id, None));
+            } else if let Some(topic) = entry
+                .thread_properties
+                .and_then(|properties| properties.topic)
+                .map(|topic| safe_display(&topic))
+                .filter(|topic| !topic.is_empty())
+            {
+                rows.push((id, Some(topic)));
+            }
+        }
+        peers.sort();
+        peers.dedup();
+        let names = self.peer_names(&session, &peers).await?;
+        let mut matches = Vec::new();
+        for (id, topic) in rows {
+            let label = match direct_peer_oid(&id, &self.account_id) {
+                Some(peer) => names.get(&peer).cloned(),
+                None => topic,
+            };
+            let Some(label) = label else {
+                continue;
+            };
+            if title_matches_query(&label, query) {
+                matches.push(OpenChatMatch {
+                    chat_id: id,
+                    label,
+                });
+            }
+        }
+        Ok(OpenChatPage { matches, complete })
+    }
+
+    async fn peer_names(
+        &self,
+        session: &NativeSession,
+        peers: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let mut names = std::collections::HashMap::new();
+        let Some(base) = &session.middle_tier else {
+            return Ok(names);
+        };
+        if peers.is_empty() {
+            return Ok(names);
+        }
+        let url = profile_url(base)?;
+        let bearer = self.auth.token(false).await?;
+        for chunk in peers.chunks(100) {
+            let mris: Vec<String> = chunk.iter().map(|oid| format!("8:orgid:{oid}")).collect();
+            let response = self
+                .client
+                .post(url.clone())
+                .bearer_auth(bearer.as_str())
+                .json(&mris)
+                .send()
+                .await
+                .map_err(|_| AppError::Network)?;
+            if !response.status().is_success() {
+                break;
+            }
+            let Ok(body) = bounded_body(response, MAX_RESPONSE).await else {
+                break;
+            };
+            let Ok(profiles) = serde_json::from_slice::<ShortProfiles>(&body) else {
+                break;
+            };
+            for profile in profiles.value {
+                let Some(oid) = profile_oid(&profile) else {
+                    continue;
+                };
+                if !chunk.iter().any(|peer| peer == &oid) {
+                    continue;
+                }
+                let Some(name) = profile.display_name.as_deref() else {
+                    continue;
+                };
+                let name = safe_display(name);
+                if !name.is_empty() {
+                    names.entry(oid).or_insert(name);
+                }
+            }
+        }
+        Ok(names)
     }
 
     async fn chat_directory_request(
@@ -342,6 +508,104 @@ fn directory_url(base: &Url, segments: &[&str]) -> Result<Url> {
         .append_pair("view", "mychats")
         .append_pair("pageSize", "100");
     Ok(url)
+}
+
+fn next_directory_link(directory: &DirectoryResponse) -> Option<String> {
+    directory
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.backward_link.clone())
+        .filter(|link| !link.is_empty())
+}
+
+async fn read_directory(response: reqwest::Response) -> Result<DirectoryResponse> {
+    let body = bounded_body(response, MAX_RESPONSE).await?;
+    serde_json::from_slice(&body).map_err(|_| {
+        eprintln!("Native Teams stage: chat directory response format.");
+        AppError::InvalidResponse
+    })
+}
+
+fn profile_url(base: &Url) -> Result<Url> {
+    let mut url = base.clone();
+    url.path_segments_mut()
+        .map_err(|_| AppError::InvalidResponse)?
+        .pop_if_empty()
+        .extend(["beta", "users", "fetchShortProfile"]);
+    url.query_pairs_mut()
+        .append_pair("isMailAddress", "false")
+        .append_pair("enableGuest", "true")
+        .append_pair("skypeTeamsInfo", "true");
+    Ok(url)
+}
+
+fn safe_profile_base(url: &Url) -> bool {
+    let host = url.host_str().unwrap_or("");
+    url.scheme() == "https"
+        && (host == "teams.microsoft.com" || host.ends_with(".teams.microsoft.com"))
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.path().starts_with("/api/mt/")
+}
+
+fn is_guid(value: &str) -> bool {
+    let mut parts = value.split('-');
+    let widths = [8, 4, 4, 4, 12];
+    widths.iter().all(|width| {
+        parts.next().is_some_and(|part| {
+            part.len() == *width && part.chars().all(|ch| ch.is_ascii_hexdigit())
+        })
+    }) && parts.next().is_none()
+}
+
+/// Peer object id encoded in a 1:1 thread id. Group and meeting ids do not match.
+fn direct_peer_oid(chat_id: &str, owner: &str) -> Option<String> {
+    let rest = chat_id.strip_prefix("19:")?;
+    if rest.contains("@thread") || rest.to_ascii_lowercase().contains("meeting") {
+        return None;
+    }
+    let (pair, _) = rest.split_once('@')?;
+    let (left, right) = pair.split_once('_')?;
+    let left = left.to_ascii_lowercase();
+    let right = right.to_ascii_lowercase();
+    if !is_guid(&left) || !is_guid(&right) {
+        return None;
+    }
+    let owner = owner.to_ascii_lowercase();
+    if left == owner {
+        Some(right)
+    } else if right == owner {
+        Some(left)
+    } else {
+        None
+    }
+}
+
+#[derive(Deserialize)]
+struct ShortProfiles {
+    value: Vec<ShortProfile>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShortProfile {
+    display_name: Option<String>,
+    object_id: Option<String>,
+    mri: Option<String>,
+}
+
+fn profile_oid(profile: &ShortProfile) -> Option<String> {
+    if let Some(id) = profile.object_id.as_deref() {
+        let id = id.trim().to_ascii_lowercase();
+        if is_guid(&id) {
+            return Some(id);
+        }
+    }
+    let mri = profile.mri.as_deref()?.trim().to_ascii_lowercase();
+    let id = mri.strip_prefix("8:orgid:")?;
+    is_guid(id).then(|| id.to_owned())
 }
 
 fn safe_chat_base(url: &Url) -> bool {
@@ -519,6 +783,90 @@ impl MessageSource for NativeSource {
     ) -> Result<ThreadPage> {
         Err(AppError::UnsupportedOperation)
     }
+
+    async fn search_open_chats(&self, query: &str) -> Result<OpenChatPage> {
+        self.find_open_chats(query).await
+    }
+
+    fn supports_send(&self, target: &Target) -> bool {
+        matches!(target, Target::Chat { .. })
+    }
+
+    async fn send_text(
+        &self,
+        target: &Target,
+        text: &str,
+        client_message_id: &str,
+    ) -> Result<SendReceipt> {
+        let Target::Chat { chat_id } = target else {
+            return Err(AppError::UnsupportedOperation);
+        };
+        let session = self.session(false).await?;
+        let url = Self::messages_url(&session, chat_id)?;
+        let response = self
+            .client
+            .post(url)
+            .header(
+                "Authentication",
+                format!("skypetoken={}", session.token.as_str()),
+            )
+            .json(&serde_json::json!({
+                "content": plain_teams_html(text),
+                "messagetype": "RichText/Html",
+                "contenttype": "text",
+                "clientmessageid": client_message_id,
+            }))
+            .send()
+            .await
+            .map_err(|_| AppError::OutcomeUnknown)?;
+        let status = response.status();
+        if status.is_redirection() {
+            return Err(AppError::InvalidResponse);
+        }
+        if !status.is_success() {
+            return Err(AppError::Upstream(status.as_u16()));
+        }
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(location_message_id);
+        let body = bounded_body(response, 64 * 1024).await.unwrap_or_default();
+        let message_id = location.or_else(|| {
+            serde_json::from_slice::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| value.get("id").and_then(|id| id.as_str()).map(str::to_owned))
+                .filter(|id| valid_id(id))
+        });
+        Ok(SendReceipt {
+            message_id,
+            client_message_id: client_message_id.to_owned(),
+        })
+    }
+}
+
+fn plain_teams_html(text: &str) -> String {
+    let mut escaped = String::new();
+    for ch in text.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '\n' => escaped.push_str("<br/>"),
+            _ => escaped.push(ch),
+        }
+    }
+    format!("<p>{escaped}</p>")
+}
+
+fn location_message_id(location: &str) -> Option<String> {
+    let path = location.split('?').next().unwrap_or(location);
+    let last = path.rsplit('/').next().unwrap_or("").trim();
+    if !last.is_empty() && last.chars().all(|ch| ch.is_ascii_digit()) && valid_id(last) {
+        Some(last.to_owned())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -546,6 +894,16 @@ mod tests {
         async fn token(&self, _setup: bool) -> Result<Zeroizing<String>> {
             Ok(Zeroizing::new("fixture-teams-token".into()))
         }
+    }
+
+    #[test]
+    fn plain_text_replies_are_escaped_before_they_are_posted() {
+        assert_eq!(
+            plain_teams_html("Use <tag> & \"quotes\"\nnext"),
+            "<p>Use &lt;tag&gt; &amp; \"quotes\"<br/>next</p>"
+        );
+        assert_eq!(location_message_id("/v1/messages/1793400000001"), Some("1793400000001".into()));
+        assert_eq!(location_message_id("/v1/messages/not-numeric"), None);
     }
 
     #[test]
@@ -637,6 +995,7 @@ mod tests {
         let base = Url::parse(&base).unwrap();
         let source = Arc::new(NativeSource {
             auth: Arc::new(FixtureAuth),
+            account_id: "aaaaaaaa-0000-0000-0000-000000000001".into(),
             client: http_client().unwrap(),
             authz: base.join("authz").unwrap(),
             directory: base.join("directory").unwrap(),
@@ -674,6 +1033,96 @@ mod tests {
             .await;
         assert!(matches!(denied, Err(AppError::Forbidden)));
         assert_eq!(calls.load(Ordering::SeqCst), 4);
+        task.abort();
+    }
+
+    #[test]
+    fn direct_peer_comes_only_from_the_one_to_one_id() {
+        let owner = "aaaaaaaa-0000-0000-0000-000000000001";
+        let peer = "bbbbbbbb-0000-0000-0000-000000000002";
+        let chat = format!("19:{owner}_{peer}@unq.gbl.spaces");
+        assert_eq!(direct_peer_oid(&chat, owner).as_deref(), Some(peer));
+        assert_eq!(
+            direct_peer_oid("19:fictional-chat@thread.v2", owner),
+            None
+        );
+        assert!(safe_profile_base(
+            &Url::parse("https://teams.microsoft.com/api/mt/part/amer-03").unwrap()
+        ));
+        assert!(!safe_profile_base(
+            &Url::parse("https://teams.microsoft.com/api/csa").unwrap()
+        ));
+    }
+
+    #[tokio::test]
+    async fn open_chat_search_uses_titles_and_does_not_read_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let fixture_base = base.clone();
+        let owner = "aaaaaaaa-0000-0000-0000-000000000001";
+        let peer = "bbbbbbbb-0000-0000-0000-000000000002";
+        let direct = format!("19:{owner}_{peer}@unq.gbl.spaces");
+        let app = Router::new().fallback(any(move |request: Request| {
+            let base = fixture_base.clone();
+            let direct = direct.clone();
+            async move {
+                match (request.method(), request.uri().path()) {
+                    (&Method::POST, "/authz") => axum::Json(json!({
+                        "tokens": {"skypeToken": "fixture-skype-token", "expiresIn": 3600},
+                        "regionGtms": {"chatService": base, "middleTier": base}
+                    }))
+                    .into_response(),
+                    (&Method::GET, "/directory") => StatusCode::UNAUTHORIZED.into_response(),
+                    (&Method::GET, "/v1/users/ME/conversations") => axum::Json(json!({
+                        "conversations": [
+                            {"id": direct},
+                            {"id": "19:allan@thread.v2", "threadProperties": {"topic": "Allan and José"}},
+                            {"id": "19:fixture@thread.v2", "threadProperties": {"topic": "Fixture group"}}
+                        ]
+                    }))
+                    .into_response(),
+                    (&Method::POST, "/beta/users/fetchShortProfile") => {
+                        assert_eq!(
+                            request.headers()["authorization"],
+                            "Bearer fixture-teams-token"
+                        );
+                        axum::Json(json!({
+                            "value": [
+                                {"objectId": "bbbbbbbb-0000-0000-0000-000000000002", "displayName": "José Almeida"},
+                                {"objectId": "cccccccc-0000-0000-0000-000000000003", "displayName": "Wrong person"}
+                            ]
+                        }))
+                        .into_response()
+                    }
+                    (&Method::GET, path) if path.ends_with("/messages") => {
+                        panic!("open chat search must not read messages");
+                    }
+                    _ => StatusCode::NOT_FOUND.into_response(),
+                }
+            }
+        }));
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let base = Url::parse(&base).unwrap();
+        let source = NativeSource {
+            auth: Arc::new(FixtureAuth),
+            account_id: owner.into(),
+            client: http_client().unwrap(),
+            authz: base.join("authz").unwrap(),
+            directory: base.join("directory").unwrap(),
+            fixture_origin: Some(base),
+            session: Mutex::new(None),
+        };
+        let jose = source.find_open_chats("josé").await.unwrap();
+        assert!(jose.complete);
+        assert_eq!(jose.matches.len(), 2);
+        assert_eq!(jose.matches[0].label, "José Almeida");
+        assert_eq!(jose.matches[1].label, "Allan and José");
+        let one = source.find_open_chats("almeida").await.unwrap();
+        assert_eq!(one.matches.len(), 1);
+        assert!(one.matches[0].chat_id.contains(peer));
+        let group = source.find_open_chats("fixture").await.unwrap();
+        assert_eq!(group.matches.len(), 1);
+        assert_eq!(group.matches[0].label, "Fixture group");
         task.abort();
     }
 }

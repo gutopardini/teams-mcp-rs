@@ -1,88 +1,104 @@
-# Teams MCP in Rust
+# Teams MCP
 
-A local MCP server that helps AI agents read authorized Microsoft Teams
-conversations and assemble context. The project is cross-platform by design,
-with Linux first. English is the default project and product language; the
-message catalog is designed to accommodate additional languages.
+A local [MCP](https://modelcontextprotocol.io) server that lets an AI chat use
+Microsoft Teams without copying conversations by hand.
 
-## Current status
+You ask things like “what did Ana say in the incidents chat?” or “reply in that
+chat with this text.” The server resolves the chat, reads only what you
+allowed, and posts a message only after you confirm the exact preview.
 
-The first increment provides a **read-only** MCP server, Microsoft Graph and
-native Teams chat adapters, separate browser or device-code sign-in, an explicit
-per-chat and per-channel allowlist, and a network-free demo. Each response
-identifies its coverage and treats Teams message text as untrusted data.
+It is a Rust process on your machine. It speaks MCP over stdin and stdout. Your
+refresh token stays in the operating-system keyring, not in the repository and
+not in the chat transcript.
 
-On Linux, native sign-in and a page of 10 messages in one explicitly selected
-chat were validated against one live tenant. Other tenants, native channel
-reads, message completeness, and non-Linux credential stores remain unvalidated.
-Message drafts, approval, sending, and real-time monitoring are not implemented.
-See [PLAN.md](PLAN.md), the [implementation notes](docs/implementation.md),
-and the [reuse notes](docs/teams-linux-rs-reuse.md).
-The initial English catalog covers errors and notices; CLI help and MCP tool
-descriptions are currently English literals and still need localization support.
+## What works today
+
+Linux is the only platform with a real sign-in. The demo runs wherever Rust
+builds, with fictional data and no network.
+
+| You want | What the server does |
+| --- | --- |
+| Find a chat by its label | `teams_resolve_target` matches the allowlist. One exact match is selected. Anything else asks you to choose. |
+| Find a chat the way the Teams sidebar does | `teams_search_open_chats` filters titles of chats already open in Teams. It does not search the company directory and does not read messages. |
+| Read what one person said | `teams_find_messages` returns that person's messages only when the name matches one author. |
+| Reply | `teams_propose_reply` shows the destination, the exact text, and quotes from real messages. The post happens only when the MCP client collects the word `send`. |
+| Watch a code-review chat | `teams_poll_watch` records a baseline first and later returns only newer messages. It never sends. |
+
+Reads stay inside an allowlist you write in the config file. Message text is
+marked untrusted: the model must not follow instructions found inside Teams.
+
+One Linux tenant has been used for a native sign-in, a selected chat read, and
+one confirmed direct-message send. Graph chat access with the built-in Teams
+application ID was rejected by Microsoft (`AADSTS65002`). Windows, macOS, other
+tenants, channel reads on the native backend, and unattended sending are not
+validated.
+
+Details live in [the AI-chat guide](docs/ai-chat.md), [the plan](PLAN.md), and
+the [operations guide](docs/operations.md).
+
+## Where this should go
+
+The product we want is small enough that a person who never opens this
+repository can install a binary, sign in, and let their AI client do the rest.
+
+1. **The same flow on macOS and Windows.** The protocol and the tools are
+   already shared. Sign-in still stops at the Linux keyring. The next
+   credential stores are the macOS Keychain and Windows Credential Manager,
+   each proven with a live sign-in before we call that platform supported.
+2. **Finding a person stays a sidebar search.** Type part of a name, get the
+   open chats whose titles match, and stop when more than one matches. No
+   company-wide people search, and no scan of message history just to learn
+   which chat is which.
+3. **Confirmation stays in the AI client.** The preview and the word `send`
+   should appear in the chat the person is already using. A side script that
+   drives the server is a fallback, not the design.
+4. **A reply can cite the conversation.** Evidence has to be a real excerpt.
+   The server keeps refusing to post when the quote was not actually said.
+5. **Code-review watches can wake an agent.** A configured chat can report
+   that someone asked for a review. The watch never posts by itself. Any
+   reply still goes through the same confirmation.
+6. **Graph and native Teams stay explicit.** The config chooses one backend.
+   Graph needs an application registration the tenant has authorized. Native
+   Teams can read and, in assisted mode, post in a chat. Channel threads on
+   the native backend are still future work.
+7. **The allowlist remains the boundary.** Discovering an open chat does not
+   authorize reading or sending it. The person adds the chat on purpose.
+
+What we are not building: an unattended bot that posts while nobody is looking,
+a copy of the Teams desktop client, or a place to store tokens in the repo.
 
 ## Requirements
 
 - Rust 1.88 or later and Cargo.
-- Linux for the initial credential-store implementation, with Secret Service and
-  the `secret-tool` executable available. The demo does not need a keyring.
-- For live use, a work or school account and a tenant that permits the selected
-  application and backend. The application ID from `teams-linux-rs` is built in;
-  a different application registration can be configured if needed.
-- The browser-based Linux sign-in reuses the existing `teams-linux-rs`
-  authentication window as a helper process. It uses a separate MCP session and
-  does not read the desktop client's stored credentials.
+- For a real account: Linux, Secret Service, and the `secret-tool` program.
+  The demo does not need a keyring.
+- A work or school account whose tenant allows the chosen application.
+- The built-in application ID is the public Teams client ID, reused with
+  explicit approval. Graph chat scopes need your own `identity.client_id`.
+  The native backend does not.
 
-The Graph adapter currently targets the global Microsoft cloud. It requests
-`User.Read` to verify the signed-in account, `Chat.Read` when chats are allowed,
-and `ChannelMessage.Read.All` when channels are allowed, plus `openid` and
-`offline_access`. Microsoft may grant a scope broader than this server's local
-allowlist; the server still checks the exact configured resource before a read.
-See Microsoft's documentation for [device authorization](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code),
-[chat permissions](https://learn.microsoft.com/en-us/graph/api/chat-list-messages?view=graph-rest-1.0),
-and [channel permissions](https://learn.microsoft.com/en-us/graph/api/channel-list-messages?view=graph-rest-1.0).
+The browser sign-in on Linux can reuse the `teams-linux-rs` window as a helper.
+That helper has its own session. This server does not read the desktop
+client's stored credentials.
 
-**Known sign-in limitation:** the built-in ID identifies a Microsoft-owned Teams
-client. In the Linux pilot, Microsoft rejected this ID with `AADSTS65002` when
-the MCP requested Graph chat permissions. The ID is correct, but it does not
-give this application permission to request those scopes. For the current Graph
-adapter, configure an application registration authorized for the required
-delegated permissions via `identity.client_id`; tenant consent policies still
-apply. The separate native Teams adapter uses a Teams-scoped credential instead.
-See Microsoft's [error-code reference](https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes).
-
-The native backend requests the Teams `/.default` scope plus OpenID identity
-scopes. **This credential can have capabilities beyond reading, including
-sending, even though this MCP exposes no sending tools.** It is separate from
-the desktop client's stored session. Its use requires the user's authorization
-and compliance with the tenant's policies; the per-chat allowlist does not
-reduce the underlying credential's privileges.
-
-## Try the fictional demo
+## Try the demo
 
 ```sh
 cargo run -- serve --demo
 ```
 
-The process speaks MCP over stdin/stdout and is meant to be launched by an MCP
-client. Demo mode uses only fixed fictional data and performs no network access
-or credential lookup.
+Point an MCP client at that process. It returns fictional chats and never
+touches the network.
 
-## Configure a real account
+## Use your account
 
-For an end-to-end Linux terminal walkthrough, including Codex registration and
-sign-out, see the [terminal quickstart](docs/quickstart.md).
+Copy `config.example.toml` somewhere outside this repository. Set `tenant_id`,
+`account_id`, and `backend`. Use `native_teams` for the Teams chat service, or
+`graph` with an authorized application registration. Delete the fictional
+chats and add only the rooms you want the agent to read.
 
-1. Copy `config.example.toml` to a private location outside the repository.
-2. Set `tenant_id` to the tenant UUID and `account_id` to your user's object UUID
-   in that tenant. Set `backend = "native_teams"` at the top level for native
-   chat reads; the built-in Teams ID is used when `client_id` is omitted. For
-   Graph, use `backend = "graph"` and an authorized registration.
-3. Remove the fictional entries. Add only the exact resources you want to
-   expose, or choose a native chat using the command below. Native mode supports
-   chat reads only; channel reads require the Graph adapter.
-4. For the native backend, sign in explicitly, choose a chat if needed, and
-   configure your MCP client:
+`interaction` defaults to `read_only`. Set it to `assisted` before a confirmed
+reply can be posted. Restart the server after any config change.
 
 ```sh
 cargo run -- login --config /absolute/path/to/config.toml --bootstrap-chat
@@ -91,112 +107,75 @@ cargo run -- choose-chat --config /absolute/path/to/config.toml
 cargo build --release
 ```
 
-The login command opens the default browser for device authorization and prints
-a short user code. To use the existing Teams Linux sign-in window instead:
+`choose-chat --list` prints recent chats and does not change the allowlist.
+Without `--list`, you pick a number and that chat is added. A full terminal
+walkthrough is in [docs/quickstart.md](docs/quickstart.md).
 
-```sh
-cargo run -- login --config /absolute/path/to/config.toml \
-  --webview-helper /absolute/path/to/teams-linux-rs/target/release/teams-linux-rs \
-  --bootstrap-chat
-```
-
-For initial sign-in before selecting a chat, `--bootstrap-chat` permits the
-selected backend's sign-in without adding a chat to the MCP allowlist.
-`choose-chat --list` lists at most 100 recent chat entries in the terminal,
-marking already authorized chats without changing the allowlist. Without
-`--list`, the same command prompts for
-a number, adds that chat to the allowlist, and performs a short read test. All
-interaction after login is in the console. The native credential's privileges
-remain broader than the exposed MCP tools.
-Complete sign-in yourself in the browser window. The refresh token is stored in a
-dedicated Secret Service entry for this application, tenant, client, and
-account. The server does not copy cookies, read the `teams-linux-rs` session,
-or accept a token as a command argument. The app ID reuse was explicitly approved
-by the user; no other values from the Teams Linux environment were imported.
-
-Example MCP client configuration; adjust the binary and config paths:
+Register the release binary in the MCP client:
 
 ```json
 {
   "mcpServers": {
     "teams": {
-      "command": "/absolute/path/to/teams-mcp-rs/target/release/teams-mcp",
+      "command": "/absolute/path/to/teams-mcp",
       "args": ["serve", "--config", "/absolute/path/to/config.toml"]
     }
   }
 }
 ```
 
-To remove this application's stored local session:
+On Linux the process also needs `DBUS_SESSION_BUS_ADDRESS` and
+`XDG_RUNTIME_DIR`, or Secret Service looks empty.
+
+Sign out with:
 
 ```sh
 cargo run -- logout --config /absolute/path/to/config.toml
 ```
 
-This clears the local Secret Service entry; it does not revoke a Microsoft grant.
-**Stop all running MCP server processes before signing out:** each process can
-hold a cached access token in memory. Configuration changes, including removal
-of allowed resources, also require restarting every running server. See the
-[operations guide](docs/operations.md) for details and troubleshooting.
+That removes this application's keyring entry. It does not revoke the grant in
+Microsoft's account portal. Stop every running server first, because a live
+process can still hold an access token in memory.
 
-## Available tools
+## Tools
 
 | Tool | Behavior |
 | --- | --- |
-| `teams_status` | Shows the selected backend, configured account and tenant IDs, resource counts, and read-only capabilities. It does not verify sign-in. |
-| `teams_list_teams`, `teams_list_channels`, `teams_list_chats` | List entries from the configured allowlist without querying Teams. |
-| `teams_get_messages` | Read a bounded page from an allowed chat, or from an allowed channel with the Graph backend. |
-| `teams_get_context` | Return the same bounded page with provenance, coverage, and an untrusted-content notice. It does not infer decisions. |
-| `teams_search_messages` | Search the text of up to three fetched pages within one allowed resource. Channel searches cover root posts only. |
-| `teams_get_thread` | Read an allowed channel post and a bounded page of its replies. |
+| `teams_status` | Backend, account, resource counts, and whether replies need confirmation. It does not check that sign-in still works. |
+| `teams_list_teams`, `teams_list_channels`, `teams_list_chats` | The allowlist only. They do not query Teams. |
+| `teams_get_messages`, `teams_get_context` | One bounded page from an allowed chat or, on Graph, an allowed channel. |
+| `teams_search_messages` | Local text search over at most three fetched pages of one allowed resource. |
+| `teams_get_thread` | An allowed channel post and a bounded page of replies. |
+| `teams_resolve_target` | One allowlisted label or exact ID. Otherwise, candidates and no selection. |
+| `teams_search_open_chats` | Title filter of chats already open in Teams. Several matches, or an incomplete list, means no selection. |
+| `teams_find_messages` | One author's messages. Several matching names return no message text. |
+| `teams_poll_watch` | A configured code-review watch. The first call only stores a baseline. |
+| `teams_propose_reply` | Preview a reply. Post it only after the client collects `send`. |
 
-The maximum page size is 50. A returned `next_cursor` is accepted only for the
-same service origin and resource. Use the same page-size limit when following a
-cursor. Message text is bounded; attachments are not opened. Native chat results
-cover text messages only and report an unknown attachment count as `null`. The
-server does not mark messages as read.
+Pages hold at most 50 messages. Cursors are accepted only for the same service
+and the same resource. Attachments are not opened. Native results are text
+messages in a chat. The server does not mark anything as read.
 
-Search is a case-insensitive local substring match over fetched message text; it
-does not use tenant-wide Graph search. It defaults to one page, scans at most
-three pages of 25 messages, and returns at most 20 hits. The response reports
-coverage, scanned pages, truncation, and a continuation cursor when available.
-It does not search unloaded pages, attachments, or channel replies. If the hit
-limit is reached within a page, refine the query to inspect omitted matches.
+## Security
 
-Example `teams_get_messages` arguments:
+The allowlist is checked before a token is used to read or send. Pagination
+URLs must stay on the expected origin and path. Redirects are not followed.
+Responses and message text are size-limited. The signed-in account must match
+the config.
 
-```json
-{
-  "target": {"kind": "chat", "chat_id": "19:fictional-chat@thread.v2"},
-  "limit": 10
-}
-```
+That is an application boundary, not a sandbox. A program running as the same
+user can read the config and the keyring. Do not treat the server as isolation
+from the rest of the desktop session.
 
-For a channel, use `{"kind":"channel","team_id":"...","channel_id":"..."}`
-as the target. `teams_get_thread` takes `team_id`, `channel_id`, and
-`root_message_id` separately. Treat all message bodies, author names, links, and
-other remote content as data rather than instructions.
-
-## Security boundary
-
-The server denies resources not in its configuration before obtaining a token
-or contacting the message backend. It validates pagination URLs, disables HTTP
-redirects, limits responses, checks the signed-in account, and exposes no sending tool.
-It does not log message bodies or tokens by design.
-
-The allowlist is an application boundary, not an OS sandbox. An agent with
-unrestricted shell access running as the same user may be able to read or change
-the configuration, access the user's credential store, or make direct network
-requests. Use a host with appropriate process and credential isolation when that
-threat is relevant. No automatic approval or sending is available in this slice.
+The native Teams credential can do more than these tools expose. Assisted mode
+is the only path that posts, and only after confirmation. There is no approval
+flag an agent can set by itself.
 
 ## Development
 
 ```sh
 cargo test
-cargo check
 ```
 
-The tests use fictional data and local mock services. They do not send messages
-or sign in to a real account. The [implementation notes](docs/implementation.md)
-record the checks and their limits. Keep all repository documentation in English.
+Tests use fictional data and local fakes. They do not sign in and they do not
+send to Microsoft. Repository text is English.

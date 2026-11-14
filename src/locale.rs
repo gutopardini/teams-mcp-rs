@@ -77,6 +77,9 @@ mod tests {
             AppError::InvalidResponse,
             AppError::InvalidConfig,
             AppError::NoResources,
+            AppError::InteractionReadOnly,
+            AppError::EvidenceRejected,
+            AppError::OutcomeUnknown,
             AppError::Protocol,
         ];
         for error in errors {

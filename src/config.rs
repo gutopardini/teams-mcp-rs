@@ -12,11 +12,16 @@ pub struct Config {
     pub language: String,
     #[serde(default)]
     pub backend: Backend,
+    /// `read_only` denies reply tools. `assisted` can publish only after the MCP client confirms.
+    #[serde(default)]
+    pub interaction: Interaction,
     pub identity: Identity,
     #[serde(default)]
     pub channels: Vec<Channel>,
     #[serde(default)]
     pub chats: Vec<Chat>,
+    #[serde(default)]
+    pub watches: Vec<Watch>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -25,6 +30,28 @@ pub enum Backend {
     #[default]
     Graph,
     NativeTeams,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Interaction {
+    #[default]
+    ReadOnly,
+    Assisted,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchPurpose {
+    CodeReview,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Watch {
+    pub chat_id: String,
+    pub label: String,
+    pub purpose: WatchPurpose,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -92,6 +119,18 @@ impl Config {
                 return Err(AppError::InvalidConfig);
             }
         }
+        if self.watches.len() > 8 {
+            return Err(AppError::InvalidConfig);
+        }
+        let mut watch_labels = HashSet::new();
+        for watch in &self.watches {
+            if !chats.contains(watch.chat_id.as_str())
+                || !valid_label(&watch.label)
+                || !watch_labels.insert(watch.label.as_str())
+            {
+                return Err(AppError::InvalidConfig);
+            }
+        }
         Ok(())
     }
 
@@ -131,6 +170,14 @@ impl Config {
         }
         if !self.chats.is_empty() || bootstrap_chat {
             scopes.push("https://graph.microsoft.com/Chat.Read");
+        }
+        if self.interaction == Interaction::Assisted {
+            if !self.channels.is_empty() {
+                scopes.push("https://graph.microsoft.com/ChannelMessage.Send");
+            }
+            if !self.chats.is_empty() || bootstrap_chat {
+                scopes.push("https://graph.microsoft.com/ChatMessage.Send");
+            }
         }
         Ok(scopes)
     }
@@ -219,5 +266,29 @@ mod tests {
             include_str!("../config.example.toml")
         );
         assert!(toml::from_str::<Config>(&invalid).is_err());
+    }
+
+    #[test]
+    fn assisted_graph_login_requests_send_scopes_and_watches_stay_on_the_allowlist() {
+        let mut config = example();
+        assert!(
+            !config
+                .scopes()
+                .unwrap()
+                .iter()
+                .any(|scope| scope.ends_with("Message.Send"))
+        );
+        config.interaction = Interaction::Assisted;
+        let scopes = config.scopes().unwrap();
+        assert!(scopes.contains(&"https://graph.microsoft.com/ChatMessage.Send"));
+        assert!(scopes.contains(&"https://graph.microsoft.com/ChannelMessage.Send"));
+        config.watches.push(Watch {
+            chat_id: config.chats[0].chat_id.clone(),
+            label: "Example review".into(),
+            purpose: WatchPurpose::CodeReview,
+        });
+        config.validate().unwrap();
+        config.watches[0].chat_id = "19:missing@thread.v2".into();
+        assert!(matches!(config.validate(), Err(AppError::InvalidConfig)));
     }
 }

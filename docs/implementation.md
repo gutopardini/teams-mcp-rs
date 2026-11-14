@@ -15,7 +15,7 @@ describes configuration, session handling, and errors.
 | `src/native.rs` | Native Teams session exchange, local chat discovery, bounded text chat reads, and validated regional service URLs and cursors. |
 | `src/backend.rs` | Shared message models, access-policy checks before backend calls, thread reads, and bounded local search. |
 | `src/demo.rs` | Fixed fictional data with no network or credential access. |
-| `src/server.rs` | Read-only MCP tools and structured results or sanitized tool errors. |
+| `src/server.rs` | MCP tools, including label resolution, open-chat title search, author lookup, watch polling, and confirmation-gated replies. |
 | `src/locale.rs`, `locales/en-US.ftl` | English error and notice catalog with fallback infrastructure. Full CLI and tool-description localization is pending. |
 | `tests/mcp_stdio.rs` | End-to-end MCP initialization, tool discovery, and fictional calls over stdio. |
 
@@ -45,10 +45,10 @@ not implemented or validated.
 The Graph adapter reads `/chats/{id}/messages` or
 `/teams/{team}/channels/{channel}/messages`, with separate root and reply
 requests for channel threads. Authentication uses POST requests to Microsoft's
-identity endpoints; there are no message-sending or mutation tools. The server
-does not mark messages as read. Native mode exchanges the Teams token for a
-native session and reads text chat history only. Its credential may also grant
-the ability to send even though the server implements no sending operation.
+identity endpoints. The server does not mark messages as read. Native mode
+exchanges the Teams token for a native session and reads text chat history.
+Assisted mode can post a new plain-text chat message only after the MCP client
+returns the confirmation word `send`. There is no unattended send.
 
 These checks are application guardrails, not protection against an unrestricted
 agent running with the same OS-user privileges. Approval, a protected sending

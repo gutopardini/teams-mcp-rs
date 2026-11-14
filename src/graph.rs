@@ -9,8 +9,8 @@ use url::Url;
 use crate::{
     auth::{TokenProvider, bounded_body, http_client},
     backend::{
-        Author, Message, MessagePage, MessageSource, Target, ThreadPage, message_coverage,
-        untrusted_notice,
+        Author, Message, MessagePage, MessageSource, SendReceipt, Target, ThreadPage,
+        message_coverage, untrusted_notice,
     },
     error::{AppError, Result},
 };
@@ -320,6 +320,50 @@ impl MessageSource for GraphSource {
             notice: replies.notice,
         })
     }
+
+    fn supports_send(&self, _target: &Target) -> bool {
+        true
+    }
+
+    async fn send_text(
+        &self,
+        target: &Target,
+        text: &str,
+        client_message_id: &str,
+    ) -> Result<SendReceipt> {
+        let url = self.messages_url(target)?;
+        let token = self.token_provider.access_token().await?;
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(token.as_str())
+            .json(&serde_json::json!({
+                "body": { "contentType": "text", "content": text }
+            }))
+            .send()
+            .await
+            .map_err(|_| AppError::OutcomeUnknown)?;
+        accepted_receipt(response, client_message_id).await
+    }
+}
+
+async fn accepted_receipt(response: reqwest::Response, client_message_id: &str) -> Result<SendReceipt> {
+    let status = response.status();
+    if status.is_redirection() {
+        return Err(AppError::InvalidResponse);
+    }
+    if !status.is_success() {
+        return Err(AppError::Upstream(status.as_u16()));
+    }
+    let body = bounded_body(response, 64 * 1024).await.unwrap_or_default();
+    let message_id = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|value| value.get("id").and_then(|id| id.as_str()).map(str::to_owned))
+        .filter(|id| crate::config::valid_id(id));
+    Ok(SendReceipt {
+        message_id,
+        client_message_id: client_message_id.to_owned(),
+    })
 }
 
 #[cfg(test)]
