@@ -12,7 +12,8 @@ describes configuration, session handling, and errors.
 | `src/config.rs` | Parses and validates the explicit account and resource allowlist; derives requested delegated scopes. |
 | `src/auth.rs` | Microsoft browser sign-in with PKCE, device-code and refresh flows, account verification, in-memory access-token cache, and the Linux Secret Service adapter. |
 | `src/graph.rs` | Read-only Microsoft Graph requests, validated pagination, bounded responses, and message normalization. |
-| `src/native.rs` | Native Teams session exchange, local chat discovery, bounded text chat reads, and validated regional service URLs and cursors. |
+| `src/native.rs` | Native Teams session exchange, local chat discovery, bounded text and inline-image chat reads, and validated regional service URLs and cursors. |
+| `src/images.rs` | Image URL checks, hosted-content ids, and image signature classification. |
 | `src/backend.rs` | Shared message models, access-policy checks before backend calls, thread reads, and bounded local search. |
 | `src/demo.rs` | Fixed fictional data with no network or credential access. |
 | `src/server.rs` | MCP tools, including label resolution, open-chat title search, author lookup, watch polling, and confirmation-gated replies. |
@@ -39,14 +40,16 @@ not implemented or validated.
    checked against the expected origin and path before token acquisition.
 5. Graph content is normalized with original identity, timestamps, available
    source links, truncation indicators, and untrusted-content markers. HTML is
-   converted to text; links and attachments are not opened. Search compares
+   converted to text. Inline Teams images and Graph hosted images are fetched
+   under the host checks in [operations.md](operations.md). Other links and
+   files are not opened. Search compares
    locally fetched message text and does not issue a tenant-wide search query.
 
 The Graph adapter reads `/chats/{id}/messages` or
 `/teams/{team}/channels/{channel}/messages`, with separate root and reply
 requests for channel threads. Authentication uses POST requests to Microsoft's
 identity endpoints. The server does not mark messages as read. Native mode
-exchanges the Teams token for a native session and reads text chat history.
+exchanges the Teams token for a native session and reads text and inline images.
 Assisted mode can post a new plain-text chat message only after the MCP client
 returns the confirmation word `send`. There is no unattended send.
 

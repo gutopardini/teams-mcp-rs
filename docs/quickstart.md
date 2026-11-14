@@ -125,9 +125,10 @@ terminal UI, `/mcp` shows the active servers. You can then ask, for example:
 The MCP listing tools show only the local allowlist, not the entire directory.
 The local MCP can pass selected message content to its AI client; whether that
 client or its provider retains data depends on their own configuration and
-policies. Native mode currently reads text chat messages only; channels, native
+policies. Native mode reads text and inline images from chats. Channels, native
 thread replies, message sending, drafts, approval, and automation are not
 implemented. Attachment counts and unmarked deletion status can be unknown.
+Image blocks are capped at four per response.
 
 The server reads its configuration once when it starts. After authorizing or
 removing a chat, restart the relevant MCP server process or Codex session so

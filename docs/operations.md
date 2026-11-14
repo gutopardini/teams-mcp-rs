@@ -84,10 +84,19 @@ may handle or retain data separately; their configuration is outside this server
 - Graph channel pages contain root posts only, as identified by
   `coverage: channel_root_posts_only`. Use `teams_get_thread` for replies. Graph
   chat pages use `coverage: chat_messages`. Native chat pages use
-  `coverage: native_chat_text_messages_only`; non-text events and unsupported
-  media types are omitted and attachment counts and unmarked deletion status
-  are unknown. Text with a native deletion marker is suppressed. Native channel
-  reads and channel threads are not implemented.
+  `coverage: native_chat_text_and_images`. Text and inline images are included.
+  Call recordings, polls, thread-activity events, and other unsupported media
+  stay omitted. Native attachment counts and unmarked deletion status are
+  unknown. Text with a native deletion marker is suppressed, including its
+  images. Native channel reads and channel threads are not implemented.
+- A read returns at most four images, each at most 1.5 MiB, as MCP image
+  content blocks tied to the message id and image index. Native bytes are
+  fetched only from `https://*.asm.skype.com/v1/objects/{id}/views/imgo` or
+  `https://*.asyncgw.teams.microsoft.com` with the Teams media token. Graph
+  bytes are fetched only from the Graph hosted-content path built for that
+  message. Redirects are not followed. An image that cannot be fetched stays
+  in `images` with `attached: false` and an `omitted` reason; the page still
+  succeeds. Other links and non-image files are not opened.
 - `next_cursor` is valid only for the same service origin and resource. Supply the
   same limit when following it. Invalid or modified destinations are rejected.
   `complete` on a message or thread page means that no next page was returned;
@@ -101,8 +110,8 @@ may handle or retain data separately; their configuration is outside this server
   hits were omitted, or source message text was truncated. If hits were omitted
   within a page, narrow the query; the next-page cursor cannot recover them.
 
-Message bodies, authors, links, and other remote fields are untrusted data. The
-server does not open links or attachments and does not mark messages as read.
+Message bodies, images, authors, links, and other remote fields are untrusted data. The
+server does not open links or non-image files and does not mark messages as read.
 
 ## Errors
 

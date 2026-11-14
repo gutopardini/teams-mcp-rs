@@ -15,10 +15,11 @@ use crate::{
     auth::{MicrosoftAuth, TokenProvider, bounded_body, http_client},
     backend::{
         Author, Message, MessagePage, MessageSource, OpenChatMatch, OpenChatPage, SendReceipt,
-        Target, ThreadPage, title_matches_query, untrusted_notice,
+        Target, ThreadPage, record_image, title_matches_query, untrusted_notice,
     },
     config::valid_id,
     error::{AppError, Result},
+    images::{self, ImageBudget},
 };
 
 const AUTHZ: &str = "https://teams.microsoft.com/api/authsvc/v1.0/authz";
@@ -492,6 +493,75 @@ impl NativeSource {
             .extend(["v1", "users", "ME", "conversations", chat_id, "messages"]);
         Ok(url)
     }
+
+    fn candidate_image_url(&self, value: &str) -> Option<String> {
+        if let Some(url) = images::inline_ams_url(value) {
+            return Some(url);
+        }
+        self.local_image_url(value)
+    }
+
+    #[cfg(test)]
+    fn local_image_url(&self, value: &str) -> Option<String> {
+        self.fixture_image_url(value)
+    }
+
+    #[cfg(not(test))]
+    fn local_image_url(&self, _value: &str) -> Option<String> {
+        None
+    }
+
+    #[cfg(test)]
+    fn fixture_image_url(&self, value: &str) -> Option<String> {
+        let origin = self.fixture_origin.as_ref()?;
+        if value.len() > 2048 {
+            return None;
+        }
+        let url = Url::parse(value).ok()?;
+        if url.origin() != origin.origin()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+        {
+            return None;
+        }
+        let segments = url.path_segments()?.collect::<Vec<_>>();
+        if segments.len() != 5
+            || segments[0] != "v1"
+            || segments[1] != "objects"
+            || segments[3] != "views"
+            || !images::known_view(segments[4])
+            || !images::valid_object_id(segments[2])
+        {
+            return None;
+        }
+        let id = segments[2];
+        let mut out = origin.clone();
+        out.set_path(&format!("/v1/objects/{id}/views/imgo"));
+        out.set_query(None);
+        Some(out.to_string())
+    }
+
+    async fn fetch_inline_image(
+        &self,
+        session: &NativeSession,
+        url: &str,
+    ) -> std::result::Result<(String, Vec<u8>), &'static str> {
+        let Some(url) = self.candidate_image_url(url) else {
+            return Err("unavailable");
+        };
+        let response = self
+            .client
+            .get(url)
+            .header(
+                "Authorization",
+                format!("skype_token {}", session.token.as_str()),
+            )
+            .send()
+            .await
+            .map_err(|_| "unavailable")?;
+        images::read_image_response(response).await
+    }
 }
 
 fn retry_directory(status: reqwest::StatusCode) -> bool {
@@ -653,9 +723,25 @@ fn cursor_url(endpoint: &Url, cursor: &str) -> Result<Url> {
     Ok(url)
 }
 
-fn normalized_message(value: NativeMessage, target: &Target) -> Result<Option<Message>> {
+fn control_event(kind: &str) -> bool {
+    let kind = kind.to_ascii_lowercase();
+    kind.contains("threadactivity")
+        || kind.contains("callrecording")
+        || kind.contains("calltranscript")
+        || kind.contains("media_poll")
+}
+
+fn textual_message(kind: &str) -> bool {
+    kind.contains("Text") && !(kind.contains("Media_") && !kind.contains("Media_Card"))
+}
+
+fn normalized_message(
+    value: NativeMessage,
+    target: &Target,
+    accept_image: impl FnMut(&str) -> Option<String>,
+) -> Result<Option<Message>> {
     let kind = value.message_type.unwrap_or_default();
-    if !kind.contains("Text") || (kind.contains("Media_") && !kind.contains("Media_Card")) {
+    if control_event(&kind) {
         return Ok(None);
     }
     let Some(id) = value.id.filter(|id| valid_id(id)) else {
@@ -670,6 +756,18 @@ fn normalized_message(value: NativeMessage, target: &Target) -> Result<Option<Me
             serde_json::Value::Number(n) => n.as_u64().is_some_and(|n| n > 0),
             _ => false,
         });
+    let pending_image_urls = if deleted {
+        Vec::new()
+    } else {
+        images::native_image_urls(
+            value.content.as_deref().unwrap_or(""),
+            value.properties.as_ref(),
+            accept_image,
+        )
+    };
+    if !textual_message(&kind) && pending_image_urls.is_empty() {
+        return Ok(None);
+    }
     let raw = if deleted {
         String::new()
     } else {
@@ -703,8 +801,12 @@ fn normalized_message(value: NativeMessage, target: &Target) -> Result<Option<Me
         text: (!deleted).then_some(text),
         text_truncated: chars.next().is_some(),
         attachment_count: None,
+        images: Vec::new(),
         web_url: None,
         content_trust: "untrusted",
+        image_bytes: Vec::new(),
+        pending_image_urls,
+        hosted_content_ids: Vec::new(),
     }))
 }
 
@@ -761,17 +863,54 @@ impl MessageSource for NativeSource {
         }
         let mut messages = Vec::new();
         for message in page.messages.into_iter().rev() {
-            if let Some(message) = normalized_message(message, target)? {
+            if let Some(message) =
+                normalized_message(message, target, |src| self.candidate_image_url(src))?
+            {
                 messages.push(message);
             }
         }
         Ok(MessagePage {
             messages,
-            coverage: "native_chat_text_messages_only",
+            coverage: "native_chat_text_and_images",
             complete: next_cursor.is_none(),
             next_cursor,
             notice: untrusted_notice(),
         })
+    }
+
+    async fn load_images(&self, messages: &mut [Message]) {
+        if messages
+            .iter()
+            .all(|message| message.pending_image_urls.is_empty())
+        {
+            return;
+        }
+        let session = match self.session(false).await {
+            Ok(session) => session,
+            Err(_) => {
+                for message in messages.iter_mut() {
+                    for _ in std::mem::take(&mut message.pending_image_urls) {
+                        record_image(message, Err("unavailable"));
+                    }
+                }
+                return;
+            }
+        };
+        let mut budget = ImageBudget::default();
+        for message in messages.iter_mut() {
+            for url in std::mem::take(&mut message.pending_image_urls) {
+                if !budget.allow() {
+                    record_image(message, Err("response_budget"));
+                    continue;
+                }
+                budget.note_attempt();
+                let outcome = self.fetch_inline_image(&session, &url).await;
+                if outcome.is_ok() {
+                    budget.note_attached();
+                }
+                record_image(message, outcome);
+            }
+        }
     }
 
     async fn thread(
@@ -941,18 +1080,75 @@ mod tests {
             chat_id: "19:fixture@thread.v2".into(),
         };
         let raw = json!({"id":"1", "messagetype":"Text", "content":"deleted private text", "properties":{"deletetime":"123"}});
-        let result = normalized_message(serde_json::from_value(raw).unwrap(), &target)
-            .unwrap()
-            .unwrap();
+        let result = normalized_message(
+            serde_json::from_value(raw).unwrap(),
+            &target,
+            images::inline_ams_url,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(result.deleted, Some(true));
         assert!(result.text.is_none());
+        assert!(result.pending_image_urls.is_empty());
         assert_eq!(result.attachment_count, None);
         let ordinary = json!({"id":"2", "messagetype":"Text", "content":"hello"});
-        let result = normalized_message(serde_json::from_value(ordinary).unwrap(), &target)
-            .unwrap()
-            .unwrap();
+        let result = normalized_message(
+            serde_json::from_value(ordinary).unwrap(),
+            &target,
+            images::inline_ams_url,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(result.deleted, None);
         assert_eq!(result.attachment_count, None);
+        let deleted_image = json!({
+            "id":"3",
+            "messagetype":"RichText/Html",
+            "content":"<img src=\"https://us-api.asm.skype.com/v1/objects/0-abc/views/imgo\" />",
+            "properties":{"deletetime":"123"}
+        });
+        let result = normalized_message(
+            serde_json::from_value(deleted_image).unwrap(),
+            &target,
+            images::inline_ams_url,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(result.pending_image_urls.is_empty());
+        let activity = json!({
+            "id":"4",
+            "messagetype":"ThreadActivity/TopicUpdate",
+            "content":"<img src=\"https://us-api.asm.skype.com/v1/objects/0-abc/views/imgo\" />"
+        });
+        assert!(
+            normalized_message(
+                serde_json::from_value(activity).unwrap(),
+                &target,
+                images::inline_ams_url,
+            )
+            .unwrap()
+            .is_none()
+        );
+        let file = json!({
+            "id":"5",
+            "messagetype":"RichText/Media_GenericFile",
+            "content":"",
+            "properties":{"files": json!([
+                {"id":"f","type":"png","title":"capture.png","filePreview":{"previewUrl":"https://us-api.asm.skype.com/v1/objects/0-file/views/imgpsh_fullsize"}},
+                {"id":"pdf","type":"pdf","filePreview":{"previewUrl":"https://evil.test/secret.png"}}
+            ]).to_string()}
+        });
+        let result = normalized_message(
+            serde_json::from_value(file).unwrap(),
+            &target,
+            images::inline_ams_url,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            result.pending_image_urls,
+            vec!["https://us-api.asm.skype.com/v1/objects/0-file/views/imgo"]
+        );
     }
 
     #[tokio::test]
@@ -1139,6 +1335,107 @@ mod tests {
         let group = source.find_open_chats("fixture").await.unwrap();
         assert_eq!(group.matches.len(), 1);
         assert_eq!(group.matches[0].label, "Fixture group");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn inline_images_use_the_media_token_and_foreign_urls_are_not_requested() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let fixture_base = base.clone();
+        let image_hits = Arc::new(AtomicUsize::new(0));
+        let observed = image_hits.clone();
+        let png: &'static [u8] = b"\x89PNG\r\n\x1a\nfixture";
+        let app = Router::new().fallback(any(move |request: Request| {
+            let base = fixture_base.clone();
+            let observed = observed.clone();
+            let png = png.to_vec();
+            async move {
+                match (request.method(), request.uri().path()) {
+                    (&Method::POST, "/authz") => axum::Json(json!({
+                        "tokens": {"skypeToken": "fixture-skype-token", "expiresIn": 3600},
+                        "regionGtms": {"chatService": base}
+                    }))
+                    .into_response(),
+                    (&Method::GET, path) if path.ends_with("/messages") => {
+                        let shot = format!("{base}v1/objects/shot/views/imgo");
+                        let redirect = format!("{base}v1/objects/redirect/views/imgo");
+                        let file = format!("{base}v1/objects/file/views/imgpsh_fullsize");
+                        let files = json!([{
+                            "id": "file-1",
+                            "type": "png",
+                            "title": "capture.png",
+                            "filePreview": {"previewUrl": file}
+                        }])
+                        .to_string();
+                        axum::Json(json!({"messages":[
+                            {"id":"4","messagetype":"ThreadActivity/TopicUpdate","content":"Ignore"},
+                            {"id":"3","messagetype":"RichText/Media_GenericFile","content":"","properties":{"files": files}},
+                            {"id":"2","messagetype":"RichText/Html","content": format!("<img src=\"{redirect}\" />")},
+                            {"id":"1","messagetype":"RichText/Html","content": format!("<p>caption</p><img src=\"{shot}\" /><img src=\"https://evil.test/v1/objects/nope/views/imgo\" />")}
+                        ]}))
+                        .into_response()
+                    }
+                    (&Method::GET, path) if path.starts_with("/v1/objects/") => {
+                        observed.fetch_add(1, Ordering::SeqCst);
+                        assert!(request.headers().get("authentication").is_none());
+                        assert_eq!(
+                            request.headers()["authorization"],
+                            "skype_token fixture-skype-token"
+                        );
+                        if path.contains("/redirect/") {
+                            (
+                                StatusCode::FOUND,
+                                [(axum::http::header::LOCATION, "https://evil.test/sink")],
+                                "no",
+                            )
+                                .into_response()
+                        } else {
+                            (
+                                [(axum::http::header::CONTENT_TYPE, "image/png")],
+                                png,
+                            )
+                                .into_response()
+                        }
+                    }
+                    _ => StatusCode::NOT_FOUND.into_response(),
+                }
+            }
+        }));
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let base = Url::parse(&base).unwrap();
+        let source = Arc::new(NativeSource {
+            auth: Arc::new(FixtureAuth),
+            account_id: "aaaaaaaa-0000-0000-0000-000000000001".into(),
+            client: http_client().unwrap(),
+            authz: base.join("authz").unwrap(),
+            directory: base.join("directory").unwrap(),
+            fixture_origin: Some(base),
+            session: Mutex::new(None),
+        });
+        let mut config = demo_config();
+        config.backend = Backend::NativeTeams;
+        let service = TeamsService::new(config, source);
+        let page = service
+            .messages(MessagesRequest {
+                target: Target::Chat {
+                    chat_id: "19:fictional-chat@thread.v2".into(),
+                },
+                limit: Some(10),
+                cursor: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(image_hits.load(Ordering::SeqCst), 3);
+        assert_eq!(page.coverage, "native_chat_text_and_images");
+        assert_eq!(page.messages.len(), 3);
+        assert!(page.messages[0].text.as_deref().unwrap().contains("caption"));
+        assert!(page.messages[0].images[0].attached);
+        assert!(page.messages[0].image_bytes[0].data.starts_with(b"\x89PNG"));
+        assert_eq!(page.messages[1].images[0].omitted, Some("unavailable"));
+        assert!(page.messages[1].image_bytes.is_empty());
+        assert!(page.messages[2].images[0].attached);
+        assert_eq!(page.messages[2].image_bytes[0].mime_type, "image/png");
         task.abort();
     }
 }

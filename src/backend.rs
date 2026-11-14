@@ -79,8 +79,61 @@ pub struct Message {
     pub text_truncated: bool,
     /// None when the backend cannot determine the count reliably.
     pub attachment_count: Option<usize>,
+    /// Inline images. Bytes travel as MCP image blocks, not in this JSON value.
+    pub images: Vec<MessageImage>,
     pub web_url: Option<String>,
     pub content_trust: &'static str,
+    #[serde(skip)]
+    pub image_bytes: Vec<ImageBytes>,
+    #[serde(skip)]
+    pub pending_image_urls: Vec<String>,
+    #[serde(skip)]
+    pub hosted_content_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MessageImage {
+    pub index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    pub attached: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub omitted: Option<&'static str>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ImageBytes {
+    pub index: u32,
+    pub mime_type: String,
+    pub data: Vec<u8>,
+}
+
+pub fn record_image(
+    message: &mut Message,
+    outcome: std::result::Result<(String, Vec<u8>), &'static str>,
+) {
+    let index = u32::try_from(message.images.len()).unwrap_or(u32::MAX);
+    match outcome {
+        Ok((mime, data)) => {
+            message.images.push(MessageImage {
+                index,
+                mime_type: Some(mime.clone()),
+                attached: true,
+                omitted: None,
+            });
+            message.image_bytes.push(ImageBytes {
+                index,
+                mime_type: mime,
+                data,
+            });
+        }
+        Err(reason) => message.images.push(MessageImage {
+            index,
+            mime_type: None,
+            attached: false,
+            omitted: Some(reason),
+        }),
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -316,6 +369,9 @@ pub trait MessageSource: Send + Sync {
     async fn search_open_chats(&self, _query: &str) -> Result<OpenChatPage> {
         Err(AppError::UnsupportedOperation)
     }
+
+    /// Fills [`Message::images`] from URLs already extracted for these messages.
+    async fn load_images(&self, _messages: &mut [Message]) {}
 }
 
 #[derive(Clone)]
@@ -339,11 +395,18 @@ impl TeamsService {
     }
 
     pub async fn messages(&self, request: MessagesRequest) -> Result<MessagePage> {
+        self.read_messages(request, true).await
+    }
+
+    async fn read_messages(&self, request: MessagesRequest, images: bool) -> Result<MessagePage> {
         let limit = self.validate_read(&request.target, request.limit, request.cursor.as_deref())?;
         let mut page = self
             .source
             .messages(&request.target, limit, request.cursor.as_deref())
             .await?;
+        if images {
+            self.source.load_images(&mut page.messages).await;
+        }
         page.notice = locale::text_for(&self.config.language, "notice-untrusted");
         Ok(page)
     }
@@ -366,6 +429,11 @@ impl TeamsService {
                 request.cursor.as_deref(),
             )
             .await?;
+        let mut bundled = vec![page.root.clone()];
+        bundled.extend(page.replies.iter().cloned());
+        self.source.load_images(&mut bundled).await;
+        page.root = bundled.remove(0);
+        page.replies = bundled;
         page.notice = locale::text_for(&self.config.language, "notice-untrusted");
         Ok(page)
     }
@@ -690,11 +758,14 @@ impl TeamsService {
         let mut cursor = None;
         for _ in 0..3 {
             let page = self
-                .messages(MessagesRequest {
-                    target: request.target.clone(),
-                    limit: Some(25),
-                    cursor,
-                })
+                .read_messages(
+                    MessagesRequest {
+                        target: request.target.clone(),
+                        limit: Some(25),
+                        cursor,
+                    },
+                    false,
+                )
                 .await?;
             for message in &page.messages {
                 if message.text_truncated {
@@ -1052,6 +1123,71 @@ pub fn message_coverage(target: &Target) -> &'static str {
     }
 }
 
+pub trait Illustrated {
+    fn drain_images(&mut self) -> Vec<(String, ImageBytes)>;
+}
+
+impl Illustrated for MessagePage {
+    fn drain_images(&mut self) -> Vec<(String, ImageBytes)> {
+        let mut images = Vec::new();
+        drain_message_images(&mut self.messages, &mut images);
+        images
+    }
+}
+
+impl Illustrated for ThreadPage {
+    fn drain_images(&mut self) -> Vec<(String, ImageBytes)> {
+        let mut images = Vec::new();
+        drain_message_images(std::slice::from_mut(&mut self.root), &mut images);
+        drain_message_images(&mut self.replies, &mut images);
+        images
+    }
+}
+
+impl Illustrated for FindOutcome {
+    fn drain_images(&mut self) -> Vec<(String, ImageBytes)> {
+        let mut images = Vec::new();
+        drain_message_images(&mut self.messages, &mut images);
+        images
+    }
+}
+
+impl Illustrated for PollOutcome {
+    fn drain_images(&mut self) -> Vec<(String, ImageBytes)> {
+        let mut images = Vec::new();
+        drain_message_images(&mut self.messages, &mut images);
+        images
+    }
+}
+
+impl Illustrated for SearchPage {
+    fn drain_images(&mut self) -> Vec<(String, ImageBytes)> {
+        let mut images = Vec::new();
+        drain_message_images(&mut self.hits, &mut images);
+        images
+    }
+}
+
+fn drain_message_images(messages: &mut [Message], out: &mut Vec<(String, ImageBytes)>) {
+    for message in messages {
+        for payload in std::mem::take(&mut message.image_bytes) {
+            if out.len() >= crate::images::MAX_ATTACHED_IMAGES {
+                if let Some(image) = message
+                    .images
+                    .iter_mut()
+                    .find(|image| image.index == payload.index)
+                {
+                    image.attached = false;
+                    image.mime_type = None;
+                    image.omitted = Some("response_budget");
+                }
+            } else {
+                out.push((message.id.clone(), payload));
+            }
+        }
+    }
+}
+
 struct SelectedWatch {
     chat_id: String,
     label: String,
@@ -1155,8 +1291,12 @@ mod tests {
                     text: Some("Fictional matching text".into()),
                     text_truncated: index == 0,
                     attachment_count: Some(0),
+                    images: Vec::new(),
                     web_url: None,
                     content_trust: "untrusted",
+                    image_bytes: Vec::new(),
+                    pending_image_urls: Vec::new(),
+                    hosted_content_ids: Vec::new(),
                 })
                 .collect();
             Ok(MessagePage {
@@ -1247,8 +1387,12 @@ mod tests {
             text: Some(text.into()),
             text_truncated: false,
             attachment_count: Some(0),
+            images: Vec::new(),
             web_url: None,
             content_trust: "untrusted",
+            image_bytes: Vec::new(),
+            pending_image_urls: Vec::new(),
+            hosted_content_ids: Vec::new(),
         }
     }
 

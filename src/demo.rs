@@ -36,8 +36,12 @@ fn root(target: &Target) -> Message {
         text: Some("The team will investigate the fictional incident.".into()),
         text_truncated: false,
         attachment_count: Some(0),
+        images: Vec::new(),
         web_url: None,
         content_trust: "untrusted",
+        image_bytes: Vec::new(),
+        pending_image_urls: Vec::new(),
+        hosted_content_ids: Vec::new(),
     }
 }
 

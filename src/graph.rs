@@ -10,9 +10,11 @@ use crate::{
     auth::{TokenProvider, bounded_body, http_client},
     backend::{
         Author, Message, MessagePage, MessageSource, SendReceipt, Target, ThreadPage,
-        message_coverage, untrusted_notice,
+        message_coverage, record_image, untrusted_notice,
     },
+    config::valid_id,
     error::{AppError, Result},
+    images::{self, ImageBudget},
 };
 
 const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0/";
@@ -110,6 +112,33 @@ impl GraphSource {
         }
         drop(segments);
         Ok(url)
+    }
+
+    async fn fetch_hosted(
+        &self,
+        token: &str,
+        target: &Target,
+        message_id: &str,
+        hosted_id: &str,
+    ) -> std::result::Result<(String, Vec<u8>), &'static str> {
+        if !images::valid_hosted_id(hosted_id) || !valid_id(message_id) {
+            return Err("unavailable");
+        }
+        let mut url = self.messages_url(target).map_err(|_| "unavailable")?;
+        url.path_segments_mut()
+            .map_err(|_| "unavailable")?
+            .push(message_id)
+            .push("hostedContents")
+            .push(hosted_id)
+            .push("$value");
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|_| "unavailable")?;
+        images::read_image_response(response).await
     }
 
     fn thread_urls(&self, target: &Target, root_id: &str) -> Result<(Url, Url)> {
@@ -224,6 +253,16 @@ fn normalize(value: GraphMessage, target: &Target, thread_root: Option<&str>) ->
         return Err(AppError::InvalidResponse);
     }
     let deleted = value.deleted_date_time.is_some();
+    let hosted_content_ids = if deleted {
+        Vec::new()
+    } else {
+        value
+            .body
+            .as_ref()
+            .filter(|body| body.content_type.eq_ignore_ascii_case("html"))
+            .map(|body| crate::images::hosted_content_ids(&body.content))
+            .unwrap_or_default()
+    };
     let (text, text_truncated) = if deleted {
         (None, false)
     } else if let Some(body) = value.body {
@@ -265,8 +304,12 @@ fn normalize(value: GraphMessage, target: &Target, thread_root: Option<&str>) ->
         text,
         text_truncated,
         attachment_count: Some(value.attachments.map_or(0, |attachments| attachments.len())),
+        images: Vec::new(),
         web_url: value.web_url,
         content_trust: "untrusted",
+        image_bytes: Vec::new(),
+        pending_image_urls: Vec::new(),
+        hosted_content_ids,
     })
 }
 
@@ -319,6 +362,42 @@ impl MessageSource for GraphSource {
             complete: replies.complete,
             notice: replies.notice,
         })
+    }
+
+    async fn load_images(&self, messages: &mut [Message]) {
+        if messages
+            .iter()
+            .all(|message| message.hosted_content_ids.is_empty())
+        {
+            return;
+        }
+        let Ok(token) = self.token_provider.access_token().await else {
+            for message in messages.iter_mut() {
+                for _ in std::mem::take(&mut message.hosted_content_ids) {
+                    record_image(message, Err("unavailable"));
+                }
+            }
+            return;
+        };
+        let mut budget = ImageBudget::default();
+        for message in messages.iter_mut() {
+            let target = message.target.clone();
+            let message_id = message.id.clone();
+            for hosted_id in std::mem::take(&mut message.hosted_content_ids) {
+                if !budget.allow() {
+                    record_image(message, Err("response_budget"));
+                    continue;
+                }
+                budget.note_attempt();
+                let outcome = self
+                    .fetch_hosted(token.as_str(), &target, &message_id, &hosted_id)
+                    .await;
+                if outcome.is_ok() {
+                    budget.note_attached();
+                }
+                record_image(message, outcome);
+            }
+        }
     }
 
     fn supports_send(&self, _target: &Target) -> bool {
@@ -601,6 +680,69 @@ mod tests {
             .await;
         assert!(matches!(denied_reply, Err(AppError::Forbidden)));
         assert_eq!(token_calls.load(Ordering::SeqCst), 7);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn hosted_images_are_fetched_from_the_graph_host_for_that_message() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1.0/", listener.local_addr().unwrap());
+        let png: &'static [u8] = b"\x89PNG\r\n\x1a\nhosted";
+        let app = Router::new().fallback(any(move |request: Request| {
+            let png = png.to_vec();
+            async move {
+                assert_eq!(
+                    request.headers().get("authorization").unwrap(),
+                    "Bearer fictional-access-token"
+                );
+                let path = request.uri().path();
+                assert!(!path.contains("evil"));
+                if path.contains("/hostedContents/") {
+                    assert!(path.contains("/hostedContents/abc/"));
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "image/png")],
+                        png,
+                    )
+                        .into_response()
+                } else {
+                    axum::Json(json!({
+                        "value": [{
+                            "id": "m1",
+                            "body": {
+                                "contentType": "html",
+                                "content": "<p>caption</p><img src=\"https://evil.example/hostedContents/abc/$value\"><img src=\"../hostedContents/abc/$value\">"
+                            }
+                        }]
+                    }))
+                    .into_response()
+                }
+            }
+        }));
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let source = GraphSource {
+            client: http_client().unwrap(),
+            token_provider: Arc::new(FakeToken {
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+            base: Url::parse(&base).unwrap(),
+        };
+        let service = TeamsService::new(demo_config(), Arc::new(source));
+        let page = service
+            .messages(MessagesRequest {
+                target: crate::backend::Target::Chat {
+                    chat_id: "19:image@thread.v2".into(),
+                },
+                limit: Some(5),
+                cursor: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.messages.len(), 1);
+        assert!(page.messages[0].text.as_deref().unwrap().contains("caption"));
+        assert_eq!(page.messages[0].images.len(), 1);
+        assert!(page.messages[0].images[0].attached);
+        assert_eq!(page.messages[0].image_bytes[0].mime_type, "image/png");
+        assert!(page.messages[0].image_bytes[0].data.starts_with(b"\x89PNG"));
         task.abort();
     }
 }

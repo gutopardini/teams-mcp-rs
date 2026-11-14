@@ -5,6 +5,7 @@ pub mod config;
 pub mod demo;
 pub mod error;
 pub mod graph;
+pub mod images;
 pub mod locale;
 pub mod native;
 pub mod server;

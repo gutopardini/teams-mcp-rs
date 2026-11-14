@@ -24,7 +24,7 @@ The implementation is informed by the existing project's discoveries:
   source identity and timestamps, bound content, and indicate incomplete pages.
 - **Events:** retain the original project's reconnection and reconciliation
   findings for the planned monitor; no real-time transport is exposed yet.
-- **Transport limitations:** native mode supports text chat reads only; it
+- **Transport limitations:** native mode supports text and inline-image chat reads; it
   does not implement channels, channel replies, or sending. A single live chat
   read does not establish completeness or behavior across tenants.
 
