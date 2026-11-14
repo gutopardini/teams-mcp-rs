@@ -84,8 +84,8 @@ changing the MCP allowlist:
 target/release/teams-mcp choose-chat --config "$MCP_CONFIG" --list
 ```
 
-The table shows the topic, last sender, last activity, and whether a chat is
-already authorized. A direct conversation may be labelled `Chat`; the last
+The table shows the topic, last sender, last activity, and whether replies to
+that chat are already allowed. A direct conversation may be labelled `Chat`; the last
 sender is not necessarily the other participant. The directory response may
 include message previews, but the listing does not print message bodies. This
 first page is not a complete directory of all chats.
@@ -97,12 +97,12 @@ the displayed table. Press Enter to cancel:
 target/release/teams-mcp choose-chat --config "$MCP_CONFIG"
 ```
 
-Selection adds the chat to the configuration and performs a short read test;
-the test reports the message count without printing message bodies. Existing
-authorized chats remain authorized. To remove one, edit its `[[chats]]` entry
-in the private configuration and restart all affected MCP server processes.
-For unnamed chats, labels are local and may be edited to make them easier to
-distinguish; the exact `chat_id` controls access.
+Selection adds the chat to the reply allowlist and performs a short read test;
+the test reports the message count without printing message bodies. Reading
+works before that selection. Existing reply entries stay in place. To remove
+one, edit its `[[chats]]` entry in the private configuration and restart all
+affected MCP server processes. For unnamed chats, labels are local and may be
+edited to make them easier to distinguish.
 
 ## 4. Register with Codex and test
 
@@ -118,8 +118,9 @@ If `teams-mcp` is already configured, inspect the existing entry before making
 changes. Start a new Codex session to load the configured server. In the Codex
 terminal UI, `/mcp` shows the active servers. You can then ask, for example:
 
-> Use the Teams MCP to list my authorized chats and summarize the latest
-> messages in the chat I selected. Cite the source messages when available.
+> Use the Teams MCP to find the open chat I name and summarize its latest
+> messages. Cite the source messages when available. Reading does not require
+> the chat to be on the allowlist.
 
 The MCP listing tools show only the local allowlist, not the entire directory.
 The local MCP can pass selected message content to its AI client; whether that

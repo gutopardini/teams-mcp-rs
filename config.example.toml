@@ -1,4 +1,5 @@
-# Replace the fictional UUIDs and IDs with your account and allowed resources.
+# Replace the fictional UUIDs with your account. [[chats]] and [[channels]]
+# allow replies and watches. Message reads do not require them.
 # This file contains no tokens. Keep your real configuration outside Git.
 language = "en-US"
 # "graph" or "native_teams". Native mode currently supports chat reads only.

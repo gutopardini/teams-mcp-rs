@@ -377,7 +377,10 @@ mod tests {
     use zeroize::Zeroizing;
 
     use crate::{
-        backend::{MessagesRequest, SearchRequest, TeamsService, ThreadRequest},
+        backend::{
+            MessagesRequest, ProposeReplyRequest, SearchRequest, TeamsService, ThreadRequest,
+        },
+        config::Interaction,
         demo::demo_config,
     };
 
@@ -454,7 +457,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authorized_reads_use_local_graph_and_denials_happen_before_token_access() {
+    async fn reads_any_chat_on_local_graph_and_invalid_cursors_skip_the_token() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1.0/", listener.local_addr().unwrap());
         let requests = Arc::new(AtomicUsize::new(0));
@@ -472,6 +475,8 @@ mod tests {
                     json!({"value": [{"id": "reply-1", "replyToId": "root-1", "body": {"contentType": "text", "content": "Fictional reply"}}]})
                 } else if path.ends_with("/messages/root-1") {
                     json!({"id": "root-1", "body": {"contentType": "text", "content": "Fictional root"}})
+                } else if path.contains("other-chat") {
+                    json!({"value": [{"id": "outside-1", "body": {"contentType": "text", "content": "Fictional outside chat"}}]})
                 } else if request.uri().query().is_some_and(|query| query.contains("skiptoken")) {
                     json!({"value": [{"id": "page-2", "body": {"contentType": "text", "content": "Fictional second page"}}]})
                 } else {
@@ -502,14 +507,6 @@ mod tests {
 
         let response = service
             .messages(MessagesRequest {
-                target: denied,
-                limit: None,
-                cursor: None,
-            })
-            .await;
-        assert!(matches!(response, Err(AppError::Forbidden)));
-        let response = service
-            .messages(MessagesRequest {
                 target: allowed.clone(),
                 limit: None,
                 cursor: Some("https://attacker.example/steal".into()),
@@ -518,6 +515,15 @@ mod tests {
         assert!(matches!(response, Err(AppError::InvalidCursor)));
         assert_eq!(token_calls.load(Ordering::SeqCst), 0);
         assert_eq!(requests.load(Ordering::SeqCst), 0);
+        let outside = service
+            .messages(MessagesRequest {
+                target: denied.clone(),
+                limit: None,
+                cursor: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(outside.messages[0].id, "outside-1");
 
         let first = service
             .messages(MessagesRequest {
@@ -572,8 +578,29 @@ mod tests {
         assert_eq!(thread.root.id, "root-1");
         assert_eq!(thread.replies[0].root_message_id.as_deref(), Some("root-1"));
         assert_eq!(thread.replies[0].reply_to_id.as_deref(), Some("root-1"));
-        assert_eq!(requests.load(Ordering::SeqCst), 6);
-        assert_eq!(token_calls.load(Ordering::SeqCst), 6);
+        assert_eq!(requests.load(Ordering::SeqCst), 7);
+        assert_eq!(token_calls.load(Ordering::SeqCst), 7);
+        let mut assisted = demo_config();
+        assisted.interaction = Interaction::Assisted;
+        let reply_service = TeamsService::new(
+            assisted,
+            Arc::new(GraphSource {
+                client: http_client().unwrap(),
+                token_provider: Arc::new(FakeToken {
+                    calls: token_calls.clone(),
+                }),
+                base: Url::parse(&base).unwrap(),
+            }),
+        );
+        let denied_reply = reply_service
+            .prepare_reply(ProposeReplyRequest {
+                target: denied,
+                text: "A fictional reply that must not be sent.".into(),
+                evidence: Vec::new(),
+            })
+            .await;
+        assert!(matches!(denied_reply, Err(AppError::Forbidden)));
+        assert_eq!(token_calls.load(Ordering::SeqCst), 7);
         task.abort();
     }
 }

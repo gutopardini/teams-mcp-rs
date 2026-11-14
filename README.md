@@ -4,8 +4,8 @@ A local [MCP](https://modelcontextprotocol.io) server that lets an AI chat use
 Microsoft Teams without copying conversations by hand.
 
 You ask things like “what did Ana say in the incidents chat?” or “reply in that
-chat with this text.” The server resolves the chat, reads only what you
-allowed, and posts a message only after you confirm the exact preview.
+chat with this text.” The server resolves the chat, reads it with the signed-in
+account, and posts a message only after you confirm the exact preview.
 
 It is a Rust process on your machine. It speaks MCP over stdin and stdout. Your
 refresh token stays in the operating-system keyring, not in the repository and
@@ -24,8 +24,9 @@ builds, with fictional data and no network.
 | Reply | `teams_propose_reply` shows the destination, the exact text, and quotes from real messages. The post happens only when the MCP client collects the word `send`. |
 | Watch a code-review chat | `teams_poll_watch` records a baseline first and later returns only newer messages. It never sends. |
 
-Reads stay inside an allowlist you write in the config file. Message text is
-marked untrusted: the model must not follow instructions found inside Teams.
+Reads use the signed-in account and do not require an allowlist. The allowlist
+limits replies and watches. Message text is marked untrusted: the model must
+not follow instructions found inside Teams.
 
 One Linux tenant has been used for a native sign-in, a selected chat read, and
 one confirmed direct-message send. Graph chat access with the built-in Teams
@@ -61,8 +62,8 @@ repository can install a binary, sign in, and let their AI client do the rest.
    Graph needs an application registration the tenant has authorized. Native
    Teams can read and, in assisted mode, post in a chat. Channel threads on
    the native backend are still future work.
-7. **The allowlist remains the boundary.** Discovering an open chat does not
-   authorize reading or sending it. The person adds the chat on purpose.
+7. **The allowlist limits replies and watches.** Discovering an open chat is
+   enough to read it. Sending still requires the chat on the allowlist.
 
 What we are not building: an unattended bot that posts while nobody is looking,
 a copy of the Teams desktop client, or a place to store tokens in the repo.
@@ -95,7 +96,7 @@ touches the network.
 Copy `config.example.toml` somewhere outside this repository. Set `tenant_id`,
 `account_id`, and `backend`. Use `native_teams` for the Teams chat service, or
 `graph` with an authorized application registration. Delete the fictional
-chats and add only the rooms you want the agent to read.
+chats. Add a room only when the agent should reply there or watch it.
 
 `interaction` defaults to `read_only`. Set it to `assisted` before a confirmed
 reply can be posted. Restart the server after any config change.
@@ -143,9 +144,9 @@ process can still hold an access token in memory.
 | --- | --- |
 | `teams_status` | Backend, account, resource counts, and whether replies need confirmation. It does not check that sign-in still works. |
 | `teams_list_teams`, `teams_list_channels`, `teams_list_chats` | The allowlist only. They do not query Teams. |
-| `teams_get_messages`, `teams_get_context` | One bounded page from an allowed chat or, on Graph, an allowed channel. |
-| `teams_search_messages` | Local text search over at most three fetched pages of one allowed resource. |
-| `teams_get_thread` | An allowed channel post and a bounded page of replies. |
+| `teams_get_messages`, `teams_get_context` | One bounded page from a chat or, on Graph, a channel. The allowlist is not required. |
+| `teams_search_messages` | Local text search over at most three fetched pages of one chat or channel. |
+| `teams_get_thread` | A channel post and a bounded page of replies. |
 | `teams_resolve_target` | One allowlisted label or exact ID. Otherwise, candidates and no selection. |
 | `teams_search_open_chats` | Title filter of chats already open in Teams. Several matches, or an incomplete list, means no selection. |
 | `teams_find_messages` | One author's messages. Several matching names return no message text. |
@@ -158,8 +159,10 @@ messages in a chat. The server does not mark anything as read.
 
 ## Security
 
-The allowlist is checked before a token is used to read or send. Pagination
-URLs must stay on the expected origin and path. Redirects are not followed.
+The allowlist is checked before a token is used to send. A read of a
+well-formed chat or channel id uses the signed-in account and does not consult
+the allowlist. Pagination URLs must stay on the expected origin and path.
+Redirects are not followed.
 Responses and message text are size-limited. The signed-in account must match
 the config.
 

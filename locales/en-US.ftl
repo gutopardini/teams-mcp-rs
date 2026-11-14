@@ -1,4 +1,4 @@
-error-forbidden = This resource is not explicitly authorized in the configuration.
+error-forbidden = Replies to this chat or channel require it to be listed in the configuration.
 error-invalid-input = The request contains an invalid identifier or limit.
 error-unsupported-operation = This operation is not yet available for the selected backend.
 error-invalid-cursor = The pagination cursor is invalid or belongs to another resource.

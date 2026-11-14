@@ -24,7 +24,7 @@ The server still refuses to post until the confirmation below succeeds.
 
 `teams_resolve_target` matches the allowlist. It does not search the tenant.
 
-`teams_search_open_chats` repeats the chat-list box: a case-insensitive substring of titles for chats already open in Teams. It does not search the company directory and does not read messages. One complete match is `resolved`. Several matches, or a list that still has older chats, is `needs_confirmation` with no selection. `authorized: false` means the chat was found but cannot be read until it is on the allowlist.
+`teams_search_open_chats` repeats the chat-list box: a case-insensitive substring of titles for chats already open in Teams. It does not search the company directory and does not read messages. One complete match is `resolved`. Several matches, or a list that still has older chats, is `needs_confirmation` with no selection. `authorized: false` still allows a read. A reply stays refused until that chat is on the allowlist.
 
 - `status: resolved` and a `selected` target: the label or ID matched exactly one resource.
 - `status: needs_confirmation`: there is no `selected` target. Ask the user which candidate they mean. Do not read or reply until they choose.

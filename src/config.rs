@@ -149,9 +149,6 @@ impl Config {
     }
 
     pub fn scopes_for_login(&self, bootstrap_chat: bool) -> Result<Vec<&'static str>> {
-        if self.channels.is_empty() && self.chats.is_empty() && !bootstrap_chat {
-            return Err(AppError::NoResources);
-        }
         if self.backend == Backend::NativeTeams {
             return Ok(vec![
                 "openid",
@@ -164,13 +161,9 @@ impl Config {
             "openid",
             "offline_access",
             "https://graph.microsoft.com/User.Read",
+            "https://graph.microsoft.com/Chat.Read",
+            "https://graph.microsoft.com/ChannelMessage.Read.All",
         ];
-        if !self.channels.is_empty() {
-            scopes.push("https://graph.microsoft.com/ChannelMessage.Read.All");
-        }
-        if !self.chats.is_empty() || bootstrap_chat {
-            scopes.push("https://graph.microsoft.com/Chat.Read");
-        }
         if self.interaction == Interaction::Assisted {
             if !self.channels.is_empty() {
                 scopes.push("https://graph.microsoft.com/ChannelMessage.Send");
@@ -214,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn allowlist_is_exact_and_scopes_follow_configured_resources() {
+    fn allowlist_is_exact_and_read_scopes_do_not_depend_on_it() {
         let mut config = example();
         assert!(config.allows_chat("19:fictional-chat@thread.v2"));
         assert!(!config.allows_chat("19:other-chat@thread.v2"));
@@ -227,19 +220,19 @@ mod tests {
             "19:fictional-channel@thread.tacv2"
         ));
         config.chats.clear();
-        assert!(
-            !config
-                .scopes()
-                .unwrap()
-                .iter()
-                .any(|scope| scope.ends_with("Chat.Read"))
-        );
         config.channels.clear();
-        assert!(matches!(config.scopes(), Err(AppError::NoResources)));
+        let reads = config.scopes().unwrap();
+        assert!(reads.iter().any(|scope| scope.ends_with("/Chat.Read")));
+        assert!(
+            reads
+                .iter()
+                .any(|scope| scope.ends_with("/ChannelMessage.Read.All"))
+        );
+        assert!(!reads.iter().any(|scope| scope.ends_with("Message.Send")));
         let bootstrap = config.scopes_for_login(true).unwrap();
         assert!(bootstrap.iter().any(|scope| scope.ends_with("/Chat.Read")));
         assert!(
-            !bootstrap
+            bootstrap
                 .iter()
                 .any(|scope| scope.ends_with("/ChannelMessage.Read.All"))
         );

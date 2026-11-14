@@ -145,7 +145,7 @@ async fn choose_chat(path: &Path, list_only: bool) -> Result<()> {
         println!("No chats were found in the first page.");
         return Ok(());
     }
-    println!("No.  Conversation | Last sender | Last activity | Access");
+    println!("No.  Conversation | Last sender | Last activity | Replies");
     for (index, chat) in chats.iter().enumerate() {
         let sender = if chat.last_sender.is_empty() {
             "-"
@@ -158,7 +158,7 @@ async fn choose_chat(path: &Path, list_only: bool) -> Result<()> {
             &chat.last_activity
         };
         let access = if config.allows_chat(&chat.id) {
-            "authorized"
+            "allowed"
         } else {
             "-"
         };
@@ -172,7 +172,7 @@ async fn choose_chat(path: &Path, list_only: bool) -> Result<()> {
         return Ok(());
     }
     let index = loop {
-        print!("Select a chat number to authorize (Enter to cancel): ");
+        print!("Select a chat number to allow replies (Enter to cancel): ");
         std::io::stdout()
             .flush()
             .map_err(|_| AppError::SelectionUnavailable)?;
@@ -209,7 +209,7 @@ async fn choose_chat(path: &Path, list_only: bool) -> Result<()> {
         parsed.validate()?;
         write_private_config(path, &original, &updated)?;
     }
-    println!("Selected chat is authorized. Testing read-only access...");
+    println!("Selected chat can receive replies. Testing read access...");
     let config = Config::load(path)?;
     let service = TeamsService::new(config, source);
     let page = service

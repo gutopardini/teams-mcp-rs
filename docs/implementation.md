@@ -74,10 +74,12 @@ policies, and production performance remain unvalidated.
 
 After that Graph rejection, native device-code sign-in succeeded on Linux and a
 user-selected chat returned 10 messages in a live read. A live MCP stdio client
-initialized the server, read that same authorized chat, and confirmed denial of
+initialized the server, read that same chat, and at that time confirmed denial of
 an unlisted chat. Terminal-only discovery, cancellation, and re-selection of
 the already authorized chat were also exercised without changing the allowlist.
 Message contents were not printed by those tests.
+Reads no longer consult the allowlist. A reply to a chat that is not listed is
+still refused.
 This confirms only that selected account and chat; it does not establish message
 completeness or support for other tenants.
 

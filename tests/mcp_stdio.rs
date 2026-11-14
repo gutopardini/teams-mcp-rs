@@ -63,7 +63,7 @@ impl TestClient {
 }
 
 #[tokio::test]
-async fn demo_server_lists_chat_tools_and_enforces_the_allowlist() {
+async fn demo_server_lists_chat_tools_and_reads_without_an_allowlist() {
     let mut client = TestClient::start().await;
     let init = client
         .call(
@@ -153,15 +153,13 @@ async fn demo_server_lists_chat_tools_and_enforces_the_allowlist() {
         "chat_messages"
     );
 
-    let denied = client.call(5, "tools/call", json!({
+    let outside = client.call(5, "tools/call", json!({
         "name": "teams_get_messages", "arguments": {"target": {"kind": "chat", "chat_id": "19:other@thread.v2"}}
     })).await;
-    assert_eq!(denied["result"]["isError"], true);
-    assert!(
-        denied["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("forbidden")
+    assert!(outside["result"].get("isError").is_none() || outside["result"]["isError"] == false);
+    assert_eq!(
+        outside["result"]["structuredContent"]["data"]["messages"][0]["id"],
+        "demo-message-1"
     );
 
     let thread = client.call(6, "tools/call", json!({

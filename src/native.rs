@@ -873,8 +873,8 @@ fn location_message_id(location: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::{
-        backend::{MessagesRequest, TeamsService},
-        config::Backend,
+        backend::{MessagesRequest, ProposeReplyRequest, TeamsService},
+        config::{Backend, Interaction},
         demo::demo_config,
     };
     use axum::{
@@ -956,7 +956,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn setup_and_reads_use_only_authorized_chat_and_expected_credentials() {
+    async fn setup_reads_any_chat_and_replies_stay_on_the_allowlist() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/", listener.local_addr().unwrap());
         let fixture_base = base.clone();
@@ -1007,7 +1007,7 @@ mod tests {
         assert_eq!(chats[0].label, "Fixture group");
         let mut config = demo_config();
         config.backend = Backend::NativeTeams;
-        let service = TeamsService::new(config, source);
+        let service = TeamsService::new(config, source.clone());
         let target = Target::Chat {
             chat_id: "19:fictional-chat@thread.v2".into(),
         };
@@ -1022,7 +1022,7 @@ mod tests {
         assert_eq!(page.messages.len(), 1);
         assert!(page.messages[0].text.as_ref().unwrap().contains("Hello"));
         assert_eq!(calls.load(Ordering::SeqCst), 4);
-        let denied = service
+        let outside = service
             .messages(MessagesRequest {
                 target: Target::Chat {
                     chat_id: "19:other-chat@thread.v2".into(),
@@ -1030,9 +1030,25 @@ mod tests {
                 limit: Some(10),
                 cursor: None,
             })
+            .await
+            .unwrap();
+        assert_eq!(outside.messages.len(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+        let mut assisted = demo_config();
+        assisted.backend = Backend::NativeTeams;
+        assisted.interaction = Interaction::Assisted;
+        let reply_service = TeamsService::new(assisted, source);
+        let denied = reply_service
+            .prepare_reply(ProposeReplyRequest {
+                target: Target::Chat {
+                    chat_id: "19:other-chat@thread.v2".into(),
+                },
+                text: "A fictional reply that must not be sent.".into(),
+                evidence: Vec::new(),
+            })
             .await;
         assert!(matches!(denied, Err(AppError::Forbidden)));
-        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
         task.abort();
     }
 

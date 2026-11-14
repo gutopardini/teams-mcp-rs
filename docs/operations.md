@@ -20,14 +20,15 @@ unvalidated.
   tenant. Graph verifies the account against `/me`; native mode checks the ID
   token returned directly by the Microsoft token endpoint over TLS, including
   tenant, account, audience, issuer, and validity before storing or using tokens.
-- Each allowed channel is an exact team UUID and channel ID pair. Each allowed
+- Each reply channel is an exact team UUID and channel ID pair. Each reply
   chat has an exact chat ID. `choose-chat --list` lists native chats in the
   terminal without changing the allowlist; `choose-chat` prompts in the terminal
-  and adds one selected chat. MCP listing tools expose only allowlisted entries.
-- Remove the example entries and add only the intended resources. At least one
-  channel or chat is required for normal sign-in; `--bootstrap-chat` permits
-  sign-in before choosing a chat. Native Teams credentials can have privileges
-  beyond reading; the allowlist limits MCP operations rather than the grant.
+  and adds one selected chat for replies. MCP listing tools expose only those
+  entries. Message reads do not consult the list.
+- The lists may be empty. `--bootstrap-chat` still requests chat send scope
+  before a chat is chosen, when `interaction` is `assisted`. Native Teams
+  credentials can have privileges beyond these tools; the allowlist limits
+  replies and watches rather than the grant.
   The configuration rejects unknown
   fields, duplicate resources, invalid IDs, and files larger than 128 KiB.
 - `language` defaults to `en-US`. Only the English catalog is currently bundled;
@@ -45,7 +46,7 @@ removing a resource from the file does not remove it from already running
 processes. Adding the first chat or channel can require additional Graph consent;
 sign in again if the refreshed token cannot obtain the necessary scope.
 
-The allowlist limits operations exposed by this server. It does not reduce the
+The allowlist limits replies and watches exposed by this server. It does not reduce the
 scope of a Microsoft grant, and it does not prevent another process with the same
 OS-user privileges from changing configuration or accessing credentials. Use
 process and credential isolation when that threat is relevant.
@@ -93,7 +94,7 @@ may handle or retain data separately; their configuration is outside this server
   check individual `text_truncated` flags and the coverage field separately.
 - Search performs a Unicode lowercase substring comparison locally over fetched
   message text; it does not normalize accents or search attachments. It scans
-  one to three pages of 25 messages from one allowed target and returns at most
+  one to three pages of 25 messages from one chat or channel and returns at most
   20 hits. For channels it searches root posts, not replies.
 - Search reports `pages_scanned`, `messages_scanned`, `results_truncated`, and
   `source_text_truncated`. Its `complete` field is false if more pages exist,
@@ -112,7 +113,7 @@ or tokens for diagnosis.
 
 | Code | Meaning and response |
 | --- | --- |
-| `forbidden` | The requested chat or channel is not in the loaded allowlist. Confirm the exact IDs and restart after authorized changes. |
+| `forbidden` | A reply target is not in the loaded allowlist. Reads do not return this code. Add the chat or channel and restart before sending. |
 | `invalid_input` | An identifier, page size, search query, or cursor length is invalid. Check the tool schema and bounds. |
 | `unsupported_operation` | The selected backend does not implement this operation; native channel and thread reads are not yet available. |
 | `invalid_cursor` | The cursor is malformed or targets a different origin, resource, or thread. Use an unmodified cursor returned for the same target. |
@@ -131,7 +132,7 @@ or tokens for diagnosis.
 | `response_too_large` | The response exceeded the size limit. Reduce the page size when possible. |
 | `invalid_response` | The service returned data in an unsupported or inconsistent form. The server does not guess missing data. |
 | `invalid_config` | The file is missing, invalid, or outside the configuration rules. Compare it with the example. |
-| `no_resources` | Sign-in was requested with no allowed channels or chats. Configure at least one intended resource. |
+| `no_resources` | Kept in the error catalog. Sign-in with an empty allowlist requests read scopes and does not return this code. |
 | `interaction_read_only` | A reply was requested while `interaction` is `read_only`. Set `assisted` and restart the server. |
 | `evidence_rejected` | A cited message was not in the fetched pages, or the excerpt is not contained in that message. |
 | `outcome_unknown` | A confirmed send did not return a definitive result. Check Teams before trying again. The server does not retry it. |

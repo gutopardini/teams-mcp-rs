@@ -339,8 +339,7 @@ impl TeamsService {
     }
 
     pub async fn messages(&self, request: MessagesRequest) -> Result<MessagePage> {
-        let limit =
-            self.validate_request(&request.target, request.limit, request.cursor.as_deref())?;
+        let limit = self.validate_read(&request.target, request.limit, request.cursor.as_deref())?;
         let mut page = self
             .source
             .messages(&request.target, limit, request.cursor.as_deref())
@@ -354,7 +353,7 @@ impl TeamsService {
             team_id: request.team_id,
             channel_id: request.channel_id,
         };
-        let limit = self.validate_request(&target, request.limit, request.cursor.as_deref())?;
+        let limit = self.validate_read(&target, request.limit, request.cursor.as_deref())?;
         if !valid_id(&request.root_message_id) {
             return Err(AppError::InvalidInput);
         }
@@ -660,7 +659,7 @@ impl TeamsService {
         if self.config.interaction != Interaction::Assisted {
             return Err(AppError::InteractionReadOnly);
         }
-        self.validate_request(&request.target, Some(1), None)?;
+        self.validate_send(&request.target)?;
         if !self.source.supports_send(&request.target) {
             return Err(AppError::UnsupportedOperation);
         }
@@ -761,7 +760,7 @@ impl TeamsService {
         if self.config.interaction != Interaction::Assisted {
             return Err(AppError::InteractionReadOnly);
         }
-        self.validate_request(&prepared.target, Some(1), None)?;
+        self.validate_send(&prepared.target)?;
         if !self.source.supports_send(&prepared.target) {
             return Err(AppError::UnsupportedOperation);
         }
@@ -1003,7 +1002,8 @@ impl TeamsService {
         })
     }
 
-    fn validate_request(
+    /// Reads accept any well-formed chat or channel id. The signed-in account is the boundary.
+    fn validate_read(
         &self,
         target: &Target,
         limit: Option<u32>,
@@ -1016,22 +1016,28 @@ impl TeamsService {
             return Err(AppError::InvalidInput);
         }
         match target {
-            Target::Chat { chat_id } if valid_id(chat_id) => {
-                if !self.config.allows_chat(chat_id) {
-                    return Err(AppError::Forbidden);
-                }
-            }
-            Target::Channel {
-                team_id,
-                channel_id,
-            } if Uuid::parse_str(team_id).is_ok() && valid_id(channel_id) => {
-                if !self.config.allows_channel(team_id, channel_id) {
-                    return Err(AppError::Forbidden);
-                }
-            }
+            Target::Chat { chat_id } if valid_id(chat_id) => {}
+            Target::Channel { team_id, channel_id }
+                if Uuid::parse_str(team_id).is_ok() && valid_id(channel_id) => {}
             _ => return Err(AppError::InvalidInput),
         }
         Ok(limit)
+    }
+
+    /// Replies stay on the configured allowlist.
+    fn validate_send(&self, target: &Target) -> Result<()> {
+        self.validate_read(target, Some(1), None)?;
+        let allowed = match target {
+            Target::Chat { chat_id } => self.config.allows_chat(chat_id),
+            Target::Channel { team_id, channel_id } => {
+                self.config.allows_channel(team_id, channel_id)
+            }
+        };
+        if allowed {
+            Ok(())
+        } else {
+            Err(AppError::Forbidden)
+        }
     }
 }
 
